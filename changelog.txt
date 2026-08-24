@@ -34,6 +34,18 @@ New:
   run. No combat log parsing was added and nothing extra is tracked during the
   fight, so there is no performance cost.
 
+- If you would rather announce a single metric, Auto Report has a Format
+  setting: switch it to "Single metric" and pick which one -- DPS, HPS, damage,
+  healing, absorbs, interrupts, dispels, damage taken, avoidable damage or
+  deaths. That lists the whole group for that metric, highest to lowest, so
+  "avoidable damage only" now gives you the full ranking rather than a single
+  highlight line.
+
+- New "Preview Last Run Announce" button under Tools. It prints what the most
+  recent run would have announced, using your current Auto Report settings, to
+  your own chat frame only -- nothing is sent to the group. Use it to tune the
+  settings without having to finish a key each time to see the result.
+
 Changed:
 
 - The settings panel is split into categories down the left side --
@@ -41,9 +53,13 @@ Changed:
   long scroll. The panel is wider to fit the sidebar; the options themselves
   are unchanged and in the same order within each category.
 
-- The "Auto Report Type" dropdown is gone, replaced by the per-line toggles
-  described above. If you had it set to something other than DPS, you will now
-  get the summary instead; switch off the lines you do not want.
+- The end-of-run announce defaults to the summary. If you had Auto Report Type
+  set to a specific metric, switch Format to "Single metric" to get that back
+  -- your metric choice was kept.
+
+- Single-metric reports of a saved run now list everyone rather than stopping
+  at the top-N cut, and are explicitly sorted highest to lowest rather than
+  trusting the order the game hands them back in.
 
 Fixed:
 

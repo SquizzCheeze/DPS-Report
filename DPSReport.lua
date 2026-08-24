@@ -271,6 +271,13 @@ local DEFAULT_SETTINGS = {
     autoReportChannel = "party",
     resetOnMythicStart = false,
 
+    -- "summary" = the highlight reel below; "single" = one metric, whole group
+    -- ranked highest to lowest. autoReportType only applies to "single", and
+    -- its values are METER_MODE_MAP keys (segment mode names), not TYPE_MAP
+    -- keys -- a segment is the only thing the auto-report reads.
+    autoReportFormat = "summary",
+    autoReportType = "dps",
+
     -- End-of-dungeon summary. Each line is individually toggleable so the
     -- announce can be pared back to just the parts a group cares about.
     -- Flat keys rather than a nested table: LoadSettings fills missing keys by
@@ -340,6 +347,16 @@ local function LoadSettings()
     -- Migrate legacy "raid" channel to "instance"
     if prof.autoReportChannel == "raid" then
         prof.autoReportChannel = "instance"
+    end
+
+    -- autoReportType used to hold TYPE_MAP keys, but the auto-report reads a
+    -- segment, which is keyed by METER_MODE_MAP names. "dtaken" has a direct
+    -- equivalent; "edamage" has none (enemy damage is never snapshotted), so
+    -- fall back to DPS rather than leave a value that can never resolve.
+    if prof.autoReportType == "dtaken" then
+        prof.autoReportType = "taken"
+    elseif prof.autoReportType == "edamage" then
+        prof.autoReportType = "dps"
     end
     if prof.defaultChannel == "raid" then
         prof.defaultChannel = "instance"
@@ -885,9 +902,20 @@ local function BuildSegmentReport(modeName, segIndex, topCount)
         table.insert(lines, string.format("--- %s Report%s ---", label, headerExtra))
     end
 
-    local count = math.min(topCount, #modeData.entries)
+    -- Sort a copy, highest first. The API usually hands sources back in order
+    -- already, but nothing documents that, and the entry list is shared with
+    -- the live meter -- so never sort it in place.
+    local ranked = {}
+    for i, e in ipairs(modeData.entries) do ranked[i] = e end
+    local function RankValue(e)
+        return (isPerSecond and (e.amountPerSecond or 0)) or (e.totalAmount or 0)
+    end
+    table.sort(ranked, function(a, b) return RankValue(a) > RankValue(b) end)
+
+    -- No topCount means report the whole group.
+    local count = topCount and math.min(topCount, #ranked) or #ranked
     for i = 1, count do
-        local e = modeData.entries[i]
+        local e = ranked[i]
         local value = isPerSecond and FormatNumber(e.amountPerSecond) or FormatNumber(e.totalAmount)
         local pct = ""
         if settings and settings.showPercentages ~= false and modeData.totalAmount > 0 then
@@ -1178,6 +1206,26 @@ local function BuildMythicSummaryReport(segIndex)
         return nil, "Every summary line is switched off."
     end
     return lines
+end
+
+-- What the end-of-run auto-report announces, in whichever format is configured.
+-- Both the real announce and the Tools preview button go through here, so the
+-- preview cannot drift out of step with what actually gets posted.
+local function BuildMythicAnnounce(segIndex)
+    if (settings and settings.autoReportFormat) == "single" then
+        -- Whole group, highest to lowest: no topCount. A key is five players,
+        -- so there is no reason to truncate the way a raid report would.
+        local modeName = (settings and settings.autoReportType) or "dps"
+        return BuildSegmentReport(modeName, segIndex, nil)
+    end
+    return BuildMythicSummaryReport(segIndex)
+end
+
+-- Most recent stored segment, or nil if nothing has been recorded yet.
+local function LatestSegmentIndex()
+    local segs = DPSMeter and DPSMeter.segments
+    if not segs or #segs == 0 then return nil end
+    return #segs
 end
 
 -- Register slash command
@@ -1485,10 +1533,9 @@ f:SetScript("OnEvent", function(self, event, ...)
                 local channel, target = GetChatChannel(settings.autoReportChannel, nil)
                 local lines, err
                 if segIdx > 0 then
-                    -- The summary needs the whole snapshot (every mode at once),
-                    -- so it only works off a segment. Without one there is
-                    -- nothing to summarise -- fall back to a plain DPS report.
-                    lines, err = BuildMythicSummaryReport(segIdx)
+                    -- Both formats read the snapshot segment, so neither works
+                    -- without one -- fall back to a plain DPS report below.
+                    lines, err = BuildMythicAnnounce(segIdx)
                 else
                     local topCount = settings.defaultTopCount or DEFAULT_TOP_COUNT
                     lines, err = BuildReport(Enum.DamageMeterType.Dps,
@@ -1993,6 +2040,12 @@ local function RefreshOptionsPanel()
     if panelWidgets.autoDelaySlider then
         panelWidgets.autoDelaySlider:SetValue(settings.autoReportDelay or 2)
     end
+    if panelWidgets.autoFormatDropdown then
+        panelWidgets.autoFormatDropdown:SetSelectedValue(settings.autoReportFormat or "summary")
+    end
+    if panelWidgets.autoTypeDropdown then
+        panelWidgets.autoTypeDropdown:SetSelectedValue(settings.autoReportType or "dps")
+    end
     if panelWidgets.summaryCBs then
         for key, cb in pairs(panelWidgets.summaryCBs) do
             cb:SetChecked(settings[key] ~= false)
@@ -2332,11 +2385,54 @@ function DPSReport_OpenOptionsPanel()
     panelWidgets.autoDelaySlider = autoDelaySlider
     yOffset = yOffset - 50
 
-    -- Summary lines. The announce is a run highlight reel rather than a single
-    -- metric, so each line is a toggle instead of one "report type" dropdown.
+    local autoFormatItems = {
+        { text = "Run summary",   value = "summary" },
+        { text = "Single metric", value = "single" },
+    }
+    local autoFormatDropdown = CreateDRDropdown(content, "Format", 200, autoFormatItems, function(value)
+        settings.autoReportFormat = value
+    end)
+    autoFormatDropdown:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    panelWidgets.autoFormatDropdown = autoFormatDropdown
+    yOffset = yOffset - 52
+
+    -- Single-metric mode. Values are METER_MODE_MAP keys, matching the keys
+    -- SnapshotMythicRun writes under seg.modes -- picking them straight from
+    -- that namespace is what avoids the translation step the report widget
+    -- still needs. Enemy Damage Taken is absent on purpose: METER_MODE_MAP has
+    -- no entry for it, so it is never captured into a segment.
+    local autoTypeItems = {
+        { text = "DPS", value = "dps" },
+        { text = "HPS", value = "hps" },
+        { text = "Damage Done", value = "damage" },
+        { text = "Healing Done", value = "healing" },
+        { text = "Absorbs", value = "absorbs" },
+        { text = "Interrupts", value = "interrupts" },
+        { text = "Dispels", value = "dispels" },
+        { text = "Damage Taken", value = "taken" },
+        { text = "Avoidable Damage", value = "avoidable" },
+        { text = "Deaths", value = "deaths" },
+    }
+    local autoTypeDropdown = CreateDRDropdown(content, "Metric (single metric only)", 200, autoTypeItems, function(value)
+        settings.autoReportType = value
+    end)
+    autoTypeDropdown:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    panelWidgets.autoTypeDropdown = autoTypeDropdown
+    yOffset = yOffset - 46
+
+    local singleNote = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    singleNote:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    singleNote:SetWidth(340)
+    singleNote:SetJustifyH("LEFT")
+    singleNote:SetText("Single metric lists the whole group, highest to lowest.")
+    singleNote:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+    yOffset = yOffset - 26
+
+    -- Summary lines. Only apply to the "Run summary" format; each line is a
+    -- toggle so the announce can be pared back to what a group cares about.
     local summaryLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     summaryLabel:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
-    summaryLabel:SetText("Lines to announce")
+    summaryLabel:SetText("Summary lines (run summary only)")
     summaryLabel:SetTextColor(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3])
     yOffset = yOffset - 22
 
@@ -2596,6 +2692,38 @@ function DPSReport_OpenOptionsPanel()
 
     -- === TOOLS ===
     NewPage("Tools")
+
+    -- Preview goes to your own chat frame only, never to the group -- the whole
+    -- point is checking what a run would announce without announcing it.
+    local previewBtn = CreateDRButton(content, "Preview Last Run Announce", 200, 26)
+    previewBtn:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    previewBtn:SetScript("OnClick", function()
+        local segIdx = LatestSegmentIndex()
+        if not segIdx then
+            print("|cff00ccff[DPSReport]|r No run recorded yet - finish a Mythic+ "
+                .. "key (or any fight that creates a segment) first.")
+            return
+        end
+        local lines, err = BuildMythicAnnounce(segIdx)
+        if err or not lines then
+            print("|cff00ccff[DPSReport]|r " .. (err or "Nothing to preview."))
+            return
+        end
+        print("|cff00ccff[DPSReport]|r Preview - shown to you only, not sent to chat:")
+        for _, line in ipairs(lines) do
+            print("|cff999999" .. line .. "|r")
+        end
+    end)
+    yOffset = yOffset - 34
+
+    local previewNote = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    previewNote:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    previewNote:SetWidth(340)
+    previewNote:SetJustifyH("LEFT")
+    previewNote:SetText("Uses the most recent recorded segment and the Auto Report "
+        .. "settings above.")
+    previewNote:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+    yOffset = yOffset - 34
 
     local resetBtn = CreateDRButton(content, "Reset to Defaults", 140, 26, DR_COLORS.danger)
     resetBtn:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)

@@ -68,6 +68,25 @@ player's share of the group's damage, healing, interrupts and dispels, weighted
 by what their role is actually responsible for, minus penalties for dying and
 for taking avoidable damage.
 
+Prefer one metric instead? Set **Format** to *Single metric* and pick which one
+— DPS, HPS, damage, healing, absorbs, interrupts, dispels, damage taken,
+avoidable damage or deaths. That announces the whole group for that metric,
+ranked highest to lowest:
+
+```
+--- Avoidable Damage Report (Ara-Kara, City of Echoes +12 28:41) - Total: 4.1M ---
+1. Tankboi - 1.2M (1.2M, 29.3%)
+2. Bobhealz - 890K (890K, 21.7%)
+3. Grubmage - 780K (780K, 19.0%)
+4. Stabbyboi - 618K (618K, 15.1%)
+5. Squizzcheeze (*) - 412K (412K, 10.1%)
+```
+
+**Previewing.** Under **Tools**, *Preview Last Run Announce* prints what the
+most recent run would have announced, using your current Auto Report settings.
+It goes to your own chat frame only — nothing is sent to the group — so it is
+safe to click while you tune the settings.
+
 ## Requirements
 
 - World of Warcraft retail, interface version **12.01.00** or later
