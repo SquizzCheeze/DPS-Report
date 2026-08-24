@@ -1,16 +1,13 @@
 -------------------------------------------------------------------------------
--- DPSReport: Reports DPS/HPS/stats to chat using Blizzard's C_DamageMeter API
--- Usage:
---   /dpsreport           - Report DPS for current session to party/instance
---   /dpsreport dps       - Report DPS
---   /dpsreport hps       - Report HPS
---   /dpsreport damage    - Report total damage done
---   /dpsreport healing   - Report total healing done
---   /dpsreport all       - Report DPS + HPS combined
---   /dpsreport overall   - Use "Overall" session instead of current fight
---   /dpsreport dps 5     - Report top 5 only
---   /dpsreport say       - Output to /say instead of group chat
---   /dpsreport whisper PlayerName - Whisper report to a player
+-- DPSReport: live damage meters and chat reporting built on Blizzard's
+-- C_DamageMeter API (no combat log parsing).
+--
+-- /dps  - opens the settings panel. The slash command takes no arguments;
+--         reporting is driven from the meter windows, the quick-report widget,
+--         and the end-of-dungeon auto-announce configured under Auto Report.
+--
+-- See README.md for the feature tour and CLAUDE.md for the code tour, notably
+-- the combat taint / secret-value rules that shape how values are read.
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "DPSReport"
@@ -68,6 +65,18 @@ local guidNameCache = {}  -- GUID (string) -> short name (string)
 -- Never wiped -- spec names are constants and don't need re-resolution.
 local specIconToSpecName = {}  -- specIconID -> spec display name string
 
+-- Spec role cache: maps specIconID -> "TANK" / "HEALER" / "DAMAGER".
+-- Filled from the same GetSpecializationInfo* calls that fill specIconToSpecName,
+-- so it costs nothing extra. Snapshot entries carry specIconID, which makes this
+-- the only role source that still works after the run, when the units are gone.
+-- Never wiped -- a spec's role is a constant.
+local specIconToRole = {}  -- specIconID -> role string
+
+-- Role by short name, from UnitGroupRolesAssigned. Fallback for players whose
+-- spec was never resolved (inspect is out-of-combat only and can miss people).
+-- Wiped and rebuilt with the roster, since roles change between groups.
+local roleByName = {}  -- short name -> role string
+
 -- Persistent seen-name cache: GUID -> short plain name.
 -- Keyed by the player's unique GUID string (e.g. "Player-1234-ABCDEF12").
 -- Never wiped during a session; persisted to DPSReportDB.seenNames across reloads.
@@ -78,6 +87,7 @@ local seenNameCache = {}  -- GUID (string) -> short name (string)
 local function RefreshRosterCache()
     wipe(rosterNameCache)
     wipe(guidNameCache)
+    wipe(roleByName)
     local seen = {}     -- track which classes we've seen (for collision detection)
     local specSeen = {} -- track which specIconIDs we've seen (for collision detection)
 
@@ -96,11 +106,12 @@ local function RefreshRosterCache()
     -- Cache own specIconID
     local currentSpec = GetSpecialization and GetSpecialization()
     if currentSpec then
-        local _, specName, _, icon = GetSpecializationInfo(currentSpec)
+        local _, specName, _, icon, specRole = GetSpecializationInfo(currentSpec)
         if icon and charKey then
             specNameCache[icon] = charKey
             specSeen[icon] = true
             if specName then specIconToSpecName[icon] = specName end
+            if specRole then specIconToRole[icon] = specRole end
         end
     end
 
@@ -148,11 +159,20 @@ local function RefreshRosterCache()
                     end
                     -- Cache by specIconID — more granular than class, handles same-class players
                     -- specSeen collision detection handles the same-class same-spec case.
+                    -- Assigned group role: plain, needs no inspect, and is the
+                    -- fallback when a member's spec never resolves. Keyed by short
+                    -- name to match the names snapshot entries carry.
+                    local assignedRole = UnitGroupRolesAssigned and UnitGroupRolesAssigned(unit)
+                    if assignedRole and not issecretvalue(assignedRole)
+                        and assignedRole ~= "NONE" then
+                        roleByName[name] = assignedRole
+                    end
                     local specID = GetInspectSpecialization and GetInspectSpecialization(unit)
                     if specID and not issecretvalue(specID) and specID > 0 then
-                        local _, specName, _, icon = GetSpecializationInfoByID(specID)
+                        local _, specName, _, icon, specRole = GetSpecializationInfoByID(specID)
                         if icon then
                             if specName then specIconToSpecName[icon] = specName end
+                            if specRole then specIconToRole[icon] = specRole end
                             if specSeen[icon] then
                                 specNameCache[icon] = nil  -- spec collision: two players same spec
                             else
@@ -248,9 +268,21 @@ local DEFAULT_SETTINGS = {
     showTotalInHeader = true,
     autoReport = false,
     autoReportDelay = 2,
-    autoReportType = "dps",
     autoReportChannel = "party",
     resetOnMythicStart = false,
+
+    -- End-of-dungeon summary. Each line is individually toggleable so the
+    -- announce can be pared back to just the parts a group cares about.
+    -- Flat keys rather than a nested table: LoadSettings fills missing keys by
+    -- reference, so a nested default would be shared across every profile.
+    autoSummaryHeader     = true,  -- "Dungeon +N completed in MM:SS"
+    autoSummaryMVP        = true,
+    autoSummaryTopDamage  = true,
+    autoSummaryTopHealing = true,
+    autoSummaryInterrupts = true,
+    autoSummaryDispels    = true,
+    autoSummaryAvoidable  = true,
+    autoSummaryDeaths     = true,
 
     shortNames = true,
     widgetShown = true,
@@ -869,6 +901,285 @@ local function BuildSegmentReport(modeName, segIndex, topCount)
     return lines
 end
 
+-- ============================================================================
+-- End-of-dungeon summary report
+-- ============================================================================
+-- Builds the highlight lines announced after a M+ run. Everything here reads
+-- from the segment SnapshotMythicRun already captured, which holds every mode
+-- in METER_MODE_MAP with values already laundered to plain Lua -- so this runs
+-- no C_DamageMeter calls of its own and has no taint constraints to respect.
+
+-- Role weights for the MVP score. Each row sums to 1.0, so a player who topped
+-- every metric their role is judged on scores 1.0 before penalties.
+local MVP_WEIGHTS = {
+    TANK    = { damage = 0.25, healing = 0.05, interrupts = 0.40, dispels = 0.10 },
+    HEALER  = { damage = 0.10, healing = 0.50, interrupts = 0.15, dispels = 0.25 },
+    DAMAGER = { damage = 0.50, healing = 0.05, interrupts = 0.30, dispels = 0.15 },
+}
+local MVP_DEATH_PENALTY     = 0.10  -- per death
+local MVP_AVOIDABLE_PENALTY = 0.20  -- times the player's share of group avoidable damage
+
+-- Counts (interrupts, dispels, deaths) must not go through FormatNumber -- it
+-- would render 1400 interrupts as "1.4K", and more importantly renders small
+-- counts with decimals in some locales.
+local function FormatCount(n)
+    return string.format("%d", math.floor((tonumber(n) or 0) + 0.5))
+end
+
+-- The role a snapshot entry should be judged as. specIconID travels with the
+-- entry and survives the run ending, so it is preferred; the assigned-role map
+-- covers players whose spec never got inspected.
+local function ResolveEntryRole(e)
+    if e.specIconID and specIconToRole[e.specIconID] then
+        return specIconToRole[e.specIconID]
+    end
+    if e.name and roleByName[e.name] then
+        return roleByName[e.name]
+    end
+    return "DAMAGER"
+end
+
+-- Collapse a segment's per-mode entry lists into one row per player.
+-- The roster is the union of every mode, because a mode omits players with no
+-- data for it -- a DPS who took zero avoidable damage simply isn't in that
+-- list, and treating "absent" as "no data" instead of "zero" is what makes
+-- "least avoidable damage" pick the right person.
+local function CollectSummaryPlayers(seg)
+    local players, order = {}, {}
+    local function Row(name)
+        local r = players[name]
+        if not r then
+            r = { name = name, damage = 0, healing = 0, interrupts = 0,
+                  dispels = 0, deaths = 0, avoidable = 0 }
+            players[name] = r
+            order[#order + 1] = r
+        end
+        return r
+    end
+
+    local FIELD_BY_MODE = {
+        damage     = "damage",
+        healing    = "healing",
+        interrupts = "interrupts",
+        dispels    = "dispels",
+        deaths     = "deaths",
+        avoidable  = "avoidable",
+    }
+
+    -- Seed the roster from damage, then healing: between them they cover
+    -- everyone who did anything at all.
+    for _, seedMode in ipairs({ "damage", "healing", "dps" }) do
+        local md = seg.modes and seg.modes[seedMode]
+        if md and md.entries then
+            for _, e in ipairs(md.entries) do
+                if e.name and e.name ~= "" and e.name ~= "?" then
+                    local r = Row(e.name)
+                    r.specIconID = r.specIconID or e.specIconID
+                    r.class      = r.class or e.class
+                    r.isPlayer   = r.isPlayer or e.isPlayer
+                end
+            end
+        end
+    end
+
+    for modeName, field in pairs(FIELD_BY_MODE) do
+        local md = seg.modes and seg.modes[modeName]
+        if md and md.entries then
+            for _, e in ipairs(md.entries) do
+                if e.name and e.name ~= "" and e.name ~= "?" then
+                    local r = Row(e.name)
+                    r.specIconID = r.specIconID or e.specIconID
+                    r.class      = r.class or e.class
+                    r.isPlayer   = r.isPlayer or e.isPlayer
+                    r[field]     = tonumber(e.totalAmount) or 0
+                end
+            end
+        end
+    end
+
+    return order
+end
+
+-- Highest value of `field`, with every player tied at that value.
+-- Returns nil when nobody has a non-zero value, so the caller can drop the line
+-- rather than announce "Top Dispels: Someone (0)".
+local function TopBy(rows, field)
+    local best, names = 0, {}
+    for _, r in ipairs(rows) do
+        local v = r[field] or 0
+        if v > best then
+            best, names = v, { r.name }
+        elseif v == best and v > 0 then
+            names[#names + 1] = r.name
+        end
+    end
+    if best <= 0 then return nil end
+    return best, names
+end
+
+-- Lowest value of `field` across the whole roster, ties included. Unlike TopBy
+-- a result of zero is meaningful here ("took no avoidable damage at all").
+local function LowestBy(rows, field)
+    if #rows == 0 then return nil end
+    local best, names = math.huge, {}
+    for _, r in ipairs(rows) do
+        local v = r[field] or 0
+        if v < best then
+            best, names = v, { r.name }
+        elseif v == best then
+            names[#names + 1] = r.name
+        end
+    end
+    if best == math.huge then return nil end
+    return best, names
+end
+
+-- Join names for a chat line, capped so a five-way tie doesn't fill the screen.
+local function JoinNames(names, maxShown)
+    maxShown = maxShown or 3
+    local shown = {}
+    for i = 1, math.min(maxShown, #names) do
+        shown[i] = DisplayName(names[i])
+    end
+    local s = table.concat(shown, ", ")
+    if #names > maxShown then
+        s = s .. string.format(" +%d more", #names - maxShown)
+    end
+    return s
+end
+
+-- Role-weighted MVP, following the same shape StormsDungeonData uses: each
+-- metric scored as a share of the group total, weighted by what the player's
+-- role is actually responsible for, then penalised for dying and for standing
+-- in things. Returns nil when there is nothing to score.
+local function ComputeMVP(rows)
+    if #rows == 0 then return nil end
+
+    local totals = { damage = 0, healing = 0, interrupts = 0, dispels = 0, avoidable = 0 }
+    for _, r in ipairs(rows) do
+        for k in pairs(totals) do
+            totals[k] = totals[k] + (r[k] or 0)
+        end
+    end
+
+    local function Share(v, total)
+        if not total or total <= 0 then return 0 end
+        return (v or 0) / total
+    end
+
+    local bestRow, bestScore
+    for _, r in ipairs(rows) do
+        local w = MVP_WEIGHTS[ResolveEntryRole(r)] or MVP_WEIGHTS.DAMAGER
+        local score = w.damage     * Share(r.damage,     totals.damage)
+                    + w.healing    * Share(r.healing,    totals.healing)
+                    + w.interrupts * Share(r.interrupts, totals.interrupts)
+                    + w.dispels    * Share(r.dispels,    totals.dispels)
+                    - MVP_DEATH_PENALTY     * (r.deaths or 0)
+                    - MVP_AVOIDABLE_PENALTY * Share(r.avoidable, totals.avoidable)
+        if not bestScore or score > bestScore then
+            bestRow, bestScore = r, score
+        end
+    end
+    return bestRow
+end
+
+-- Builds the announce lines for a completed run. Returns lines, or nil + reason.
+local function BuildMythicSummaryReport(segIndex)
+    local seg = DPSMeter and DPSMeter.segments and DPSMeter.segments[segIndex]
+    if not seg then
+        return nil, "Segment not found."
+    end
+
+    local rows = CollectSummaryPlayers(seg)
+    if #rows == 0 then
+        return nil, "No player data in segment."
+    end
+
+    local s = settings or {}
+    local lines = {}
+
+    if s.autoSummaryHeader ~= false then
+        table.insert(lines, string.format("--- %s completed in %s ---",
+            seg.name or "M+ Run", FormatDuration(seg.duration or 0)))
+    end
+
+    if s.autoSummaryMVP ~= false then
+        local mvp = ComputeMVP(rows)
+        if mvp then
+            table.insert(lines, "MVP: " .. DisplayName(mvp.name))
+        end
+    end
+
+    if s.autoSummaryTopDamage ~= false then
+        local v, names = TopBy(rows, "damage")
+        if v then
+            table.insert(lines, string.format("Top DMG: %s (%s)", JoinNames(names), FormatNumber(v)))
+        end
+    end
+
+    if s.autoSummaryTopHealing ~= false then
+        local v, names = TopBy(rows, "healing")
+        if v then
+            table.insert(lines, string.format("Top Healing: %s (%s)", JoinNames(names), FormatNumber(v)))
+        end
+    end
+
+    if s.autoSummaryInterrupts ~= false then
+        local v, names = TopBy(rows, "interrupts")
+        if v then
+            table.insert(lines, string.format("Top Interrupts: %s (%s)", JoinNames(names), FormatCount(v)))
+        end
+    end
+
+    if s.autoSummaryDispels ~= false then
+        local v, names = TopBy(rows, "dispels")
+        if v then
+            table.insert(lines, string.format("Top Dispels: %s (%s)", JoinNames(names), FormatCount(v)))
+        end
+    end
+
+    if s.autoSummaryAvoidable ~= false then
+        -- Only worth announcing when somebody actually took avoidable damage.
+        -- With no data at all every player sits at zero and the line would name
+        -- the whole group as joint best, which reads as a bug.
+        local anyAvoidable = false
+        for _, r in ipairs(rows) do
+            if (r.avoidable or 0) > 0 then
+                anyAvoidable = true
+                break
+            end
+        end
+        if anyAvoidable then
+            local v, names = LowestBy(rows, "avoidable")
+            if v then
+                table.insert(lines, string.format("Least Avoidable DMG: %s (%s)",
+                    JoinNames(names), FormatNumber(v)))
+            end
+        end
+    end
+
+    if s.autoSummaryDeaths ~= false then
+        local total = 0
+        for _, r in ipairs(rows) do total = total + (r.deaths or 0) end
+        if total <= 0 then
+            table.insert(lines, "Deaths: none")
+        else
+            local v, names = TopBy(rows, "deaths")
+            if v then
+                table.insert(lines, string.format("Deaths: %s total (most: %s with %s)",
+                    FormatCount(total), JoinNames(names), FormatCount(v)))
+            else
+                table.insert(lines, "Deaths: " .. FormatCount(total))
+            end
+        end
+    end
+
+    if #lines == 0 then
+        return nil, "Every summary line is switched off."
+    end
+    return lines
+end
+
 -- Register slash command
 SLASH_DPSREPORT1 = "/dps"
 SlashCmdList["DPSREPORT"] = function()
@@ -1171,15 +1482,17 @@ f:SetScript("OnEvent", function(self, event, ...)
             -- GetCombatSessionFromType(Overall) goes empty and we lose the run.
             -- Auto-report is chained so it always uses the correct segment index.
             local function DoMythicAutoReport(segIdx)
-                local defType  = settings.autoReportType or "dps"
-                local topCount = settings.defaultTopCount or DEFAULT_TOP_COUNT
                 local channel, target = GetChatChannel(settings.autoReportChannel, nil)
                 local lines, err
                 if segIdx > 0 then
-                    lines, err = BuildSegmentReport(defType, segIdx, topCount)
+                    -- The summary needs the whole snapshot (every mode at once),
+                    -- so it only works off a segment. Without one there is
+                    -- nothing to summarise -- fall back to a plain DPS report.
+                    lines, err = BuildMythicSummaryReport(segIdx)
                 else
-                    local rType = TYPE_MAP[defType] or Enum.DamageMeterType.Dps
-                    lines, err = BuildReport(rType, Enum.DamageMeterSessionType.Overall, topCount)
+                    local topCount = settings.defaultTopCount or DEFAULT_TOP_COUNT
+                    lines, err = BuildReport(Enum.DamageMeterType.Dps,
+                        Enum.DamageMeterSessionType.Overall, topCount)
                 end
                 if err then
                     print("|cff00ccff[DPSReport]|r " .. err)
@@ -1680,8 +1993,10 @@ local function RefreshOptionsPanel()
     if panelWidgets.autoDelaySlider then
         panelWidgets.autoDelaySlider:SetValue(settings.autoReportDelay or 2)
     end
-    if panelWidgets.autoTypeDropdown then
-        panelWidgets.autoTypeDropdown:SetSelectedValue(settings.autoReportType or "dps")
+    if panelWidgets.summaryCBs then
+        for key, cb in pairs(panelWidgets.summaryCBs) do
+            cb:SetChecked(settings[key] ~= false)
+        end
     end
     if panelWidgets.autoChannelDropdown then
         panelWidgets.autoChannelDropdown:SetSelectedValue(settings.autoReportChannel or "party")
@@ -1723,7 +2038,7 @@ local function RefreshOptionsPanel()
         panelWidgets.profileDropdown:SetSelectedValue(GetActiveProfile())
     end
     if panelWidgets.profLabel then
-        panelWidgets.profLabel:SetText("PROFILES — Active: " .. GetActiveProfile())
+        panelWidgets.profLabel:SetText("Active: " .. GetActiveProfile())
     end
 end
 
@@ -1736,7 +2051,9 @@ function DPSReport_OpenOptionsPanel()
 
     -- Main frame
     local panel = CreateFrame("Frame", "DPSReportOptions", UIParent, "BackdropTemplate")
-    panel:SetSize(420, 600)
+    -- Wide enough for the 150px category sidebar plus the same content column
+    -- the single-scroll layout used, so no widget had to be resized.
+    panel:SetSize(580, 600)
     panel:SetPoint("CENTER")
     panel:SetFrameStrata("DIALOG")
     panel:SetMovable(true)
@@ -1798,24 +2115,123 @@ function DPSReport_OpenOptionsPanel()
     accentLine:SetPoint("BOTTOMRIGHT", titleBar, "BOTTOMRIGHT", 0, 0)
     accentLine:SetColorTexture(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3], 0.4)
 
-    -- Content: scrollable
-    local scrollFrame = CreateFrame("ScrollFrame", nil, panel, "UIPanelScrollFrameTemplate")
-    scrollFrame:SetPoint("TOPLEFT", titleBar, "BOTTOMLEFT", 0, -1)
-    scrollFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -22, 40)
+    -- Content: a sidebar of categories, each with its own scrolling page.
+    -- These sections used to be stacked in one long scroll, which meant paging
+    -- past four unrelated groups to reach the meter options.
+    local NAV_WIDTH   = 150
+    local NAV_ITEM_H  = 26
+    local PAGE_WIDTH  = 390   -- scroll child; same as the old single column
 
-    local content = CreateFrame("Frame", nil, scrollFrame)
-    content:SetWidth(370)
-    scrollFrame:SetScrollChild(content)
+    local navBar = CreateFrame("Frame", nil, panel)
+    navBar:SetWidth(NAV_WIDTH)
+    navBar:SetPoint("TOPLEFT", titleBar, "BOTTOMLEFT", 0, -1)
+    navBar:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 1, 40)
 
-    local yOffset = -14
+    local navEdge = navBar:CreateTexture(nil, "OVERLAY")
+    navEdge:SetWidth(1)
+    navEdge:SetPoint("TOPRIGHT", navBar, "TOPRIGHT", 0, 0)
+    navEdge:SetPoint("BOTTOMRIGHT", navBar, "BOTTOMRIGHT", 0, 0)
+    navEdge:SetColorTexture(DR_COLORS.border[1], DR_COLORS.border[2], DR_COLORS.border[3], 0.5)
+
+    local contentArea = CreateFrame("Frame", nil, panel)
+    contentArea:SetPoint("TOPLEFT", navBar, "TOPRIGHT", 1, 0)
+    contentArea:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -1, 40)
+
+    -- `content` and `yOffset` are reassigned by NewPage as each category is
+    -- built, so every section below keeps laying its widgets out against
+    -- "the current page" exactly as it did against the single column.
+    local content, yOffset
     local leftPad = 14
+    local pages = {}
+    local navCursorY = -6
+
+    local function SwitchPage(target)
+        for _, p in ipairs(pages) do
+            local on = (p == target)
+            p.active = on
+            if on then
+                p.frame:Show()
+                p.btn:SetBackdropColor(DR_COLORS.tabActive[1], DR_COLORS.tabActive[2],
+                    DR_COLORS.tabActive[3], 1)
+                p.label:SetTextColor(DR_COLORS.textBright[1], DR_COLORS.textBright[2],
+                    DR_COLORS.textBright[3])
+                p.marker:Show()
+            else
+                p.frame:Hide()
+                p.btn:SetBackdropColor(0, 0, 0, 0)
+                p.label:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2],
+                    DR_COLORS.textDim[3])
+                p.marker:Hide()
+            end
+        end
+    end
+
+    -- Close off the page currently being built: its scroll child has to be as
+    -- tall as the widgets that landed on it, or the scrollbar won't reach them.
+    local function FinishPage()
+        if content then
+            content:SetHeight(math.abs(yOffset) + 20)
+        end
+    end
+
+    local function NewPage(label)
+        FinishPage()
+
+        local btn = CreateFrame("Button", nil, navBar, "BackdropTemplate")
+        btn:SetHeight(NAV_ITEM_H)
+        btn:SetPoint("TOPLEFT", navBar, "TOPLEFT", 0, navCursorY)
+        btn:SetPoint("TOPRIGHT", navBar, "TOPRIGHT", -1, navCursorY)
+        navCursorY = navCursorY - NAV_ITEM_H
+        btn:SetBackdrop({ bgFile = "Interface\\BUTTONS\\WHITE8X8" })
+        btn:SetBackdropColor(0, 0, 0, 0)
+
+        local btnLabel = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        btnLabel:SetPoint("LEFT", btn, "LEFT", 14, 0)
+        btnLabel:SetJustifyH("LEFT")
+        btnLabel:SetText(label)
+        btnLabel:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+
+        local marker = btn:CreateTexture(nil, "OVERLAY")
+        marker:SetWidth(3)
+        marker:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+        marker:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", 0, 0)
+        marker:SetColorTexture(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3], 1)
+        marker:Hide()
+
+        local pageFrame = CreateFrame("Frame", nil, contentArea)
+        pageFrame:SetAllPoints()
+        pageFrame:Hide()
+
+        local scroll = CreateFrame("ScrollFrame", nil, pageFrame, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", pageFrame, "TOPLEFT", 0, 0)
+        scroll:SetPoint("BOTTOMRIGHT", pageFrame, "BOTTOMRIGHT", -22, 0)
+
+        local child = CreateFrame("Frame", nil, scroll)
+        child:SetWidth(PAGE_WIDTH)
+        scroll:SetScrollChild(child)
+
+        local page = { btn = btn, label = btnLabel, marker = marker,
+                       frame = pageFrame, child = child }
+        pages[#pages + 1] = page
+
+        btn:SetScript("OnEnter", function(self)
+            if not page.active then
+                self:SetBackdropColor(DR_COLORS.controlHi[1], DR_COLORS.controlHi[2],
+                    DR_COLORS.controlHi[3], 0.5)
+            end
+        end)
+        btn:SetScript("OnLeave", function(self)
+            if not page.active then self:SetBackdropColor(0, 0, 0, 0) end
+        end)
+        btn:SetScript("OnClick", function() SwitchPage(page) end)
+
+        content = child
+        yOffset = -14
+        return page
+    end
 
     -- === FORMATTING ===
-    local fmtLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    fmtLabel:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
-    fmtLabel:SetText("FORMATTING")
-    fmtLabel:SetTextColor(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3])
-    yOffset = yOffset - 22
+    NewPage("Formatting")
 
     local selfMarkerCB = CreateDRCheckbox(content, "Show self marker (*)", function(checked)
         settings.showSelfMarker = checked
@@ -1898,15 +2314,8 @@ function DPSReport_OpenOptionsPanel()
     panelWidgets.nicknameBox = nicknameBox
     yOffset = yOffset - 32
 
-    CreateDRDivider(content, yOffset)
-    yOffset = yOffset - 14
-
     -- === AUTO REPORT ===
-    local autoLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    autoLabel:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
-    autoLabel:SetText("AUTO REPORT")
-    autoLabel:SetTextColor(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3])
-    yOffset = yOffset - 22
+    NewPage("Auto Report")
 
     local autoReportCB = CreateDRCheckbox(content, "Auto-report at end of M+ dungeon", function(checked)
         settings.autoReport = checked
@@ -1923,25 +2332,35 @@ function DPSReport_OpenOptionsPanel()
     panelWidgets.autoDelaySlider = autoDelaySlider
     yOffset = yOffset - 50
 
-    local autoTypeItems = {
-        { text = "DPS", value = "dps" },
-        { text = "HPS", value = "hps" },
-        { text = "Damage Done", value = "damage" },
-        { text = "Healing Done", value = "healing" },
-        { text = "Absorbs", value = "absorbs" },
-        { text = "Interrupts", value = "interrupts" },
-        { text = "Dispels", value = "dispels" },
-        { text = "Damage Taken", value = "dtaken" },
-        { text = "Avoidable Damage", value = "avoidable" },
-        { text = "Deaths", value = "deaths" },
-        { text = "Enemy Damage Taken", value = "edamage" },
+    -- Summary lines. The announce is a run highlight reel rather than a single
+    -- metric, so each line is a toggle instead of one "report type" dropdown.
+    local summaryLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    summaryLabel:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    summaryLabel:SetText("Lines to announce")
+    summaryLabel:SetTextColor(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3])
+    yOffset = yOffset - 22
+
+    local summaryLines = {
+        { key = "autoSummaryHeader",     text = "Dungeon name, level and time" },
+        { key = "autoSummaryMVP",        text = "MVP" },
+        { key = "autoSummaryTopDamage",  text = "Top damage" },
+        { key = "autoSummaryTopHealing", text = "Top healing" },
+        { key = "autoSummaryInterrupts", text = "Top interrupts" },
+        { key = "autoSummaryDispels",    text = "Top dispels" },
+        { key = "autoSummaryAvoidable",  text = "Least avoidable damage" },
+        { key = "autoSummaryDeaths",     text = "Deaths (total and who died most)" },
     }
-    local autoTypeDropdown = CreateDRDropdown(content, "Auto Report Type", 200, autoTypeItems, function(value)
-        settings.autoReportType = value
-    end)
-    autoTypeDropdown:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
-    panelWidgets.autoTypeDropdown = autoTypeDropdown
-    yOffset = yOffset - 52
+    panelWidgets.summaryCBs = {}
+    for _, line in ipairs(summaryLines) do
+        local key = line.key
+        local cb = CreateDRCheckbox(content, line.text, function(checked)
+            settings[key] = checked
+        end)
+        cb:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+        panelWidgets.summaryCBs[key] = cb
+        yOffset = yOffset - 26
+    end
+    yOffset = yOffset - 10
 
     local autoChannelItems = {
         { text = "Say", value = "say" },
@@ -1959,11 +2378,7 @@ function DPSReport_OpenOptionsPanel()
     yOffset = yOffset - 52
 
     -- === MYTHIC+ ===
-    local mythicLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    mythicLabel:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
-    mythicLabel:SetText("MYTHIC+")
-    mythicLabel:SetTextColor(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3])
-    yOffset = yOffset - 22
+    NewPage("Mythic+")
 
     local resetMythicCB = CreateDRCheckbox(content, "Reset meters when M+ starts", function(checked)
         settings.resetOnMythicStart = checked
@@ -1972,15 +2387,8 @@ function DPSReport_OpenOptionsPanel()
     panelWidgets.resetMythicCB = resetMythicCB
     yOffset = yOffset - 24
 
-    CreateDRDivider(content, yOffset)
-    yOffset = yOffset - 14
-
     -- === REAL-TIME METER ===
-    local meterLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    meterLabel:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
-    meterLabel:SetText("REAL-TIME METER")
-    meterLabel:SetTextColor(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3])
-    yOffset = yOffset - 22
+    NewPage("Meter")
 
     local meterShownCB = CreateDRCheckbox(content, "Show meter", function(checked)
         settings.meterShown = checked
@@ -2076,13 +2484,13 @@ function DPSReport_OpenOptionsPanel()
     panelWidgets.refreshRateSlider = refreshRateSlider
     yOffset = yOffset - 50
 
-    CreateDRDivider(content, yOffset)
-    yOffset = yOffset - 14
-
     -- === PROFILES ===
+    NewPage("Profiles")
+    -- Kept as an in-page header: unlike the other sections this one carries the
+    -- active profile name, which RefreshOptionsPanel updates.
     local profLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     profLabel:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
-    profLabel:SetText("PROFILES — Active: " .. GetActiveProfile())
+    profLabel:SetText("Active: " .. GetActiveProfile())
     profLabel:SetTextColor(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3])
     panelWidgets.profLabel = profLabel
     yOffset = yOffset - 22
@@ -2186,15 +2594,8 @@ function DPSReport_OpenOptionsPanel()
     end)
     yOffset = yOffset - 32
 
-    CreateDRDivider(content, yOffset)
-    yOffset = yOffset - 14
-
     -- === TOOLS ===
-    local toolsLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    toolsLabel:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
-    toolsLabel:SetText("TOOLS")
-    toolsLabel:SetTextColor(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3])
-    yOffset = yOffset - 24
+    NewPage("Tools")
 
     local resetBtn = CreateDRButton(content, "Reset to Defaults", 140, 26, DR_COLORS.danger)
     resetBtn:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
@@ -2207,8 +2608,9 @@ function DPSReport_OpenOptionsPanel()
     end)
     yOffset = yOffset - 40
 
-    -- Set scroll child height
-    content:SetHeight(math.abs(yOffset) + 20)
+    -- Close off the last page and open on the first one.
+    FinishPage()
+    SwitchPage(pages[1])
 
     -- Bottom bar
     local bottomBar = CreateFrame("Frame", nil, panel)
@@ -2801,9 +3203,16 @@ local function CreateReportWidget()
         local lines, err
         local ws = widgetState.session or "current"
         if ws:sub(1, 4) == "seg:" then
-            -- Map widget type names to segment storage mode names
+            -- Map widget type names (TYPE_MAP keys) to segment storage mode
+            -- names (METER_MODE_MAP keys). Only the names that actually differ
+            -- belong here: "avoidable" is its own segment mode, so mapping it
+            -- to "taken" silently reported Damage Taken instead.
+            -- "edamage" has no segment mode -- METER_MODE_MAP has no
+            -- EnemyDamageTaken entry, so SnapshotMythicRun never captures it --
+            -- and it falls through to the "no data for this mode" error rather
+            -- than reporting player damage under an enemy-damage heading.
             local WIDGET_TO_SEG_MODE = {
-                dtaken = "taken", avoidable = "taken", edamage = "damage",
+                dtaken = "taken",
             }
             local modeName = WIDGET_TO_SEG_MODE[widgetState.type] or widgetState.type or "dps"
             local idx = tonumber(ws:sub(5))

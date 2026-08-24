@@ -25,20 +25,23 @@ A `.luarc.json` configures the Lua language server (Lua 5.1 runtime, matching Wo
 
 ## Slash commands (user-facing)
 
-`/dps` (defined via `SLASH_DPSREPORT1`) with args: `dps`, `hps`, `damage`, `healing`, `all`, `overall`, `<type> <topN>`, `say`, `whisper <name>`. See the header comment at the top of `DPSReport.lua` for the full list.
+`/dps` (defined via `SLASH_DPSREPORT1`) is the only slash command, and it **ignores its arguments** — the handler just calls `DPSReport_OpenOptionsPanel()`. Earlier revisions of this file and of the header comment in `DPSReport.lua` documented an argument surface (`dps`, `hps`, `overall`, `whisper <name>`, …) that was never implemented; `/dpsreport` was never registered either. Reporting happens through the meter windows, the quick-report widget, and the end-of-dungeon auto-announce.
 
 ## Architecture
 
 The file is organized top-to-bottom into sections separated by `-- ====...====` banners. Reading it roughly in order:
 
-1. **Profile/roster/nickname state** (~L30–220) — per-character active profile, roster name caches (`rosterNameCache`, `specNameCache`, `guidNameCache`, `seenNameCache`), and an out-of-combat inspection queue (`ProcessInspectQueue`/`QueueGroupInspections`) used to resolve player specs/names since `NotifyInspect` is blocked in combat.
+1. **Profile/roster/nickname state** (~L30–220) — per-character active profile, roster name caches (`rosterNameCache`, `specNameCache`, `guidNameCache`, `seenNameCache`), and an out-of-combat inspection queue (`ProcessInspectQueue`/`QueueGroupInspections`) used to resolve player specs/names since `NotifyInspect` is blocked in combat. `RefreshRosterCache` also fills `specIconToRole` (specIconID → TANK/HEALER/DAMAGER, never wiped) and `roleByName` (short name → assigned role, wiped with the roster); the MVP score reads them, preferring `specIconToRole` because snapshot entries carry `specIconID` and so stay resolvable after the group disbands.
 2. **Settings** (~L223–480) — `DEFAULT_SETTINGS`, `LoadSettings`/`SaveSettings`, per-character profile switching (`SwitchProfile`), and meter layout persistence (`SaveMeterLayoutToSettings`/`ApplyMeterLayoutFromSettings`).
-3. **Chat report building** (~L480–860) — `BuildReport`/`BuildSegmentReport` turn a `C_DamageMeter` session into chat lines; `SendLine(s)` picks the right chat channel.
-4. **Main event frame** (~L940–1270) — registers `MAIN_EVENTS` (group/inspect/challenge-mode events), auto-report-on-combat-end logic, and the minimap button.
-5. **Options panel** (~L1270–2180) — a hand-rolled settings UI (`DPSReport_OpenOptionsPanel`) built from custom widget helpers (`CreateDRButton`, `CreateDRSlider`, `CreateDRCheckbox`, `CreateDRDropdown`, `ShowDRConfirm`), not Blizzard's Settings API.
-6. **Report widget** (~L2180–2820) — a small floating "quick report" frame (`CreateReportWidget`, `DPSReport_ToggleWidget`).
-7. **Meter snap system** (~L2840–3135) — `MeterSnapSystem`: drag-to-snap alignment between meter frames (edge detection, snap-line overlays, anchor persistence).
-8. **DPSMeter / MeterProto** (~L3135 onward) — the core live meter windows. `DPSMeter` is the manager (`NewMeter`, `RemoveMeter`, `ResetAll`, `SaveAllMeters`/`LoadAllMeters`); `MeterProto` is the per-meter-instance prototype covering frame creation, bar rendering, tooltips, the breakdown window (per-spell/per-target drill-down), chat reporting from a meter, and position persistence.
+3. **Chat report building** (~L780–900) — `BuildReport`/`BuildSegmentReport` turn a `C_DamageMeter` session into chat lines; `SendLine(s)` picks the right chat channel.
+4. **End-of-dungeon summary** (~L900–1180) — `BuildMythicSummaryReport` and its helpers (`CollectSummaryPlayers`, `TopBy`/`LowestBy`, `ComputeMVP`). Reads only the segment `SnapshotMythicRun` already captured, so every value is plain Lua and none of the taint rules below apply. `MVP_WEIGHTS` holds the role weighting.
+5. **Main event frame** (~L1290–1620) — registers `MAIN_EVENTS` (group/inspect/challenge-mode events), the `CHALLENGE_MODE_COMPLETED` snapshot-and-announce chain, and the minimap button.
+6. **Options panel** (~L1620–2640) — a hand-rolled settings UI (`DPSReport_OpenOptionsPanel`) built from custom widget helpers (`CreateDRButton`, `CreateDRSlider`, `CreateDRCheckbox`, `CreateDRDropdown`, `ShowDRConfirm`), not Blizzard's Settings API. Split into sidebar categories by a local `NewPage(label)` helper: it opens a nav entry plus its own scroll frame, then reassigns the `content` and `yOffset` upvalues so the section code that follows lays widgets onto whichever page is current. `FinishPage` sets each page's scroll-child height. To add a category, call `NewPage` where the section starts — nothing else needs to change.
+7. **Report widget** (~L2640–3300) — a small floating "quick report" frame (`CreateReportWidget`, `DPSReport_ToggleWidget`).
+8. **Meter snap system** (~L3300–3600) — `MeterSnapSystem`: drag-to-snap alignment between meter frames (edge detection, snap-line overlays, anchor persistence).
+9. **DPSMeter / MeterProto** (~L3600 onward) — the core live meter windows. `DPSMeter` is the manager (`NewMeter`, `RemoveMeter`, `ResetAll`, `SaveAllMeters`/`LoadAllMeters`); `MeterProto` is the per-meter-instance prototype covering frame creation, bar rendering, tooltips, the breakdown window (per-spell/per-target drill-down), chat reporting from a meter, and position persistence.
+
+Two mode-name namespaces exist and are easy to confuse: `TYPE_MAP` keys (`dtaken`, `edamage`, …) name report types, while `METER_MODE_MAP` keys (`taken`, `avoidable`, …) name meter modes *and* the keys under `seg.modes` that `SnapshotMythicRun` writes. Anything reading a segment must use the `METER_MODE_MAP` spelling — `WIDGET_TO_SEG_MODE` in the report widget translates. `METER_MODE_MAP` has no `EnemyDamageTaken` entry, so enemy damage is never captured into a segment.
 
 ### The taint/secret-value constraint (critical, non-obvious)
 

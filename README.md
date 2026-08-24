@@ -34,23 +34,39 @@ screen with per-spell and per-target breakdowns.
 
 ## Usage
 
-The slash command is `/dps` (`/dpsreport` also works).
+Type `/dps` to open the settings panel. Everything the addon does is driven
+from there, from the minimap button, or from the addon compartment — the slash
+command takes no arguments.
 
-| Command | Description |
-| --- | --- |
-| `/dps` | Report DPS for the current session to party/instance chat |
-| `/dps dps` | Report DPS |
-| `/dps hps` | Report HPS |
-| `/dps damage` | Report total damage done |
-| `/dps healing` | Report total healing done |
-| `/dps all` | Report DPS + HPS combined |
-| `/dps overall` | Use the "Overall" session instead of the current fight |
-| `/dps dps 5` | Report the top 5 only (works with any report type) |
-| `/dps say` | Output to `/say` instead of group chat |
-| `/dps whisper PlayerName` | Whisper the report to a player |
+**Live meters.** Add as many meter windows as you like, each with its own
+metric: DPS, HPS, damage, healing, absorbs, interrupts, dispels, damage taken,
+avoidable damage or deaths. Click a bar to drill into per-spell and per-target
+detail. Meters snap to each other when dragged, and remember their position,
+size and mode per profile.
 
-Open the options panel from the minimap button or the addon compartment to
-configure meters, profiles, auto-reporting, and nicknames.
+**Reporting to chat.** Each meter has a report button that posts its current
+contents to chat. The quick-report widget does the same for a chosen metric,
+session or saved segment.
+
+**End-of-dungeon summary.** With auto-report enabled, finishing a Mythic+ key
+announces a highlight summary to chat:
+
+```
+--- Ara-Kara, City of Echoes +12 completed in 28:41 ---
+MVP: Bobhealz
+Top DMG: Squizzcheeze (48.2M)
+Top Healing: Bobhealz (31.7M)
+Top Interrupts: Tankboi (14)
+Top Dispels: Bobhealz (9)
+Least Avoidable DMG: Squizzcheeze (412K)
+Deaths: 3 total (most: Tankboi with 2)
+```
+
+Every line can be switched off individually under **Auto Report**, along with
+the channel and the delay before it posts. MVP is a role-weighted score: each
+player's share of the group's damage, healing, interrupts and dispels, weighted
+by what their role is actually responsible for, minus penalties for dying and
+for taking avoidable damage.
 
 ## Requirements
 

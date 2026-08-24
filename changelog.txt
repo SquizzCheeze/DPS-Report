@@ -1,14 +1,62 @@
 DPS Report Changelog
 ====================
 
-V1.7
+V1.8
 
-- TODO: replace this section before tagging v1.7.
+New:
 
-  This file is uploaded to CurseForge VERBATIM as the release notes for
-  whatever version is being built, so whatever is written here is exactly what
-  players read. Cover only this version, in plain language, from the player's
-  point of view.
+- Finishing a Mythic+ key now announces a summary of the run instead of a
+  single metric. It reads:
 
-  When the release is out, move this whole section to the top of
-  CHANGELOG-ARCHIVE.txt and start a fresh one here for the next version.
+    --- Ara-Kara, City of Echoes +12 completed in 28:41 ---
+    MVP: Bobhealz
+    Top DMG: Squizzcheeze (48.2M)
+    Top Healing: Bobhealz (31.7M)
+    Top Interrupts: Tankboi (14)
+    Top Dispels: Bobhealz (9)
+    Least Avoidable DMG: Squizzcheeze (412K)
+    Deaths: 3 total (most: Tankboi with 2)
+
+  Every line can be switched off on its own under Auto Report, so you can cut
+  it down to just the parts your group cares about. Lines with nothing to say
+  are dropped automatically -- no "Top Dispels" line on a run with no dispels,
+  and no avoidable-damage line if nobody took any.
+
+- MVP is a role-weighted score. Each player is measured on their share of the
+  group's damage, healing, interrupts and dispels, weighted by what their role
+  is actually responsible for, then penalised for dying and for taking
+  avoidable damage. A healer topping healing beats a DPS topping damage on a
+  run where the healer also dispelled and never died.
+
+- Deaths now name who died most, not just the group total.
+
+- All of this comes from data the addon was already collecting at the end of a
+  run. No combat log parsing was added and nothing extra is tracked during the
+  fight, so there is no performance cost.
+
+Changed:
+
+- The settings panel is split into categories down the left side --
+  Formatting, Auto Report, Mythic+, Meter, Profiles, Tools -- rather than one
+  long scroll. The panel is wider to fit the sidebar; the options themselves
+  are unchanged and in the same order within each category.
+
+- The "Auto Report Type" dropdown is gone, replaced by the per-line toggles
+  described above. If you had it set to something other than DPS, you will now
+  get the summary instead; switch off the lines you do not want.
+
+Fixed:
+
+- Reporting a saved Mythic+ segment while the meter was set to Avoidable
+  Damage reported Damage Taken instead. Those are different metrics and the
+  segment held both -- it was simply reading the wrong one.
+
+- Reporting a saved segment set to Enemy Damage Taken reported the group's own
+  damage done under an "Enemy Damage Taken" heading. Enemy damage is not saved
+  into segments at all, so this now says there is no data for that mode rather
+  than showing the wrong number.
+
+- The slash command help was wrong. /dps has only ever opened the settings
+  panel; the arguments the header comment listed (/dps hps, /dps overall,
+  /dps whisper Name and the rest) were never implemented, and /dpsreport was
+  never registered. The documentation now matches what the addon does.
