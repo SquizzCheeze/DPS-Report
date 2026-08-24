@@ -127,8 +127,8 @@ zip, upload it to CurseForge (project `1504877`, read from
 3. Tag and push:
 
    ```sh
-   git tag -a v1.8 -m "V1.8"
-   git push origin v1.8
+   git tag -a v1.20 -m "V1.20"
+   git push origin v1.20
    ```
 
 To check a build without publishing, run the workflow manually from the

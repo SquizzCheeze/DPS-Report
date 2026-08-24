@@ -8,5 +8,5 @@ history as its release notes. Older sections move here instead of being
 deleted: many carry root-cause writeups worth grepping before assuming a bug
 is fresh. This file is in the .pkgmeta ignore list, so it never ships.
 
-(No archived versions yet -- v1.8 is the first release published through this
+(No archived versions yet -- v1.20 is the first release published through this
 workflow.)
