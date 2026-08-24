@@ -48,6 +48,13 @@ New:
 
 Changed:
 
+- The interface is now coloured with your class colour instead of gold.
+  Checkboxes, sliders, dropdown highlights, the category markers in the
+  settings sidebar, section headings, scrollbars, title accents and the
+  snap-break buttons all follow it, and it changes per character, so a warlock
+  and a druid look different without touching a setting. Gold remains as a
+  fallback if the class cannot be read for any reason.
+
 - The settings panel is split into categories down the left side --
   Formatting, Auto Report, Mythic+, Meter, Profiles, Tools -- rather than one
   long scroll. The panel is wider to fit the sidebar; the options themselves

@@ -19,6 +19,7 @@ screen with per-spell and per-target breakdowns.
 - **Nicknames** — set friendly names for group members; shared automatically
   between group members also running the addon.
 - **Minimap button and addon compartment** entry.
+- **Class-coloured interface** — accents follow the character's class colour.
 
 ## Installation
 

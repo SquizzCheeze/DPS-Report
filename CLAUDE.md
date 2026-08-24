@@ -54,6 +54,12 @@ As of WoW 12.0, `C_DamageMeter` values (names, numbers) returned **during combat
 - **Out of combat**, `SafeStr`/`LaunderNumber`/`FormatSecret` use `pcall(tostring, ...)` to convert secret values to plain Lua, which only succeeds outside combat. Chat report building (`BuildReport`) relies on this.
 - When touching any code path that reads `C_DamageMeter.*` results, check whether it can run during combat and use the correct laundering strategy for that context — mixing them up either throws taint errors or silently fails to render.
 
+### Theming
+
+`DR_COLORS` is the palette every custom widget reads. `accent` and `accentDim` are overwritten **in place** with the player's class colour by `ApplyClassAccent()`, which runs at file load and again on `PLAYER_LOGIN` (the first point `UnitClass` is guaranteed to answer). In-place mutation is the whole trick: all ~35 accent call sites copy `DR_COLORS.accent[1..3]` at widget-creation time, and every frame is built after login, so nothing else has to know the colour changed. The gold literal left in the table is only the fallback when the class can't be resolved. Don't replace those tables with new ones — that breaks the mutation.
+
+Blizzard's `UIPanelScrollFrameTemplate` scrollbar isn't part of `DR_COLORS`; `SkinDRScrollBar(scrollFrame)` tints it and probes for both the modern (`.Track`/`.Thumb`) and legacy (`ThumbTexture` + up/down buttons) shapes, skipping whatever it doesn't find. The two breakdown-window scroll frames deliberately hide their scrollbars, so the settings panel's is the only one that needs it.
+
 ### Persistence model
 
 `DPSReportDB` (SavedVariables) holds: `profiles` (account-wide, keyed by profile name, each holding a full settings table cloned from `DEFAULT_SETTINGS`), `charData` (per-character active profile pointer, keyed by `charKey` = "Name-Realm"), `nicknames` (account-wide), and `seenNames` (account-wide GUID → name cache). `LoadSettings()` also handles one-time migrations (legacy account-wide `activeProfile` → per-character, legacy `settings` → `profiles.Default`, `"raid"` channel → `"instance"`, and `autoReportType` from `TYPE_MAP` spellings to the `METER_MODE_MAP` ones the segment is keyed by).

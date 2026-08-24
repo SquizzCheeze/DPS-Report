@@ -21,6 +21,7 @@ local SnapshotMythicRun
 local METER_MODE_MAP
 local DR_COLORS
 local ApplyDRBackdrop
+local ApplyClassAccent
 local settings
 
 
@@ -1449,6 +1450,9 @@ f:SetScript("OnEvent", function(self, event, ...)
         return
     elseif event == "PLAYER_LOGIN" then
         charKey = UnitName("player") .. "-" .. GetRealmName()
+        -- Re-run in case UnitClass wasn't answerable at file load. Mutates the
+        -- accent tables in place, and every frame is built after this point.
+        ApplyClassAccent()
         settings = LoadSettings()
         -- Populate own nickname in cache for display
         if DPSReportDB.nicknames[charKey] and DPSReportDB.nicknames[charKey] ~= "" then
@@ -1707,7 +1711,9 @@ DR_COLORS = {
     bg          = { 0.06, 0.06, 0.08, 0.96 },
     titleBar    = { 0.10, 0.10, 0.13, 1 },
     border      = { 0.25, 0.25, 0.30, 1 },
-    accent      = { 0.78, 0.65, 0.30, 1 },     -- warm gold
+    -- Overwritten in place with the player's class colour by ApplyClassAccent
+    -- below; the gold is only what shows if the class can't be resolved.
+    accent      = { 0.78, 0.65, 0.30, 1 },
     accentDim   = { 0.55, 0.45, 0.20, 0.6 },
     text        = { 0.90, 0.90, 0.90, 1 },
     textDim     = { 0.55, 0.55, 0.58, 1 },
@@ -1720,6 +1726,61 @@ DR_COLORS = {
     tabActive   = { 0.14, 0.14, 0.17, 1 },
     tabInactive = { 0.08, 0.08, 0.10, 1 },
 }
+
+-- Repoint the accent at the player's class colour.
+--
+-- Every widget reads DR_COLORS.accent[1..3] once, when it is built, so the two
+-- colour tables are mutated IN PLACE rather than replaced: that way this only
+-- has to run before the UI exists, and no call site needs to know about it.
+-- Called at file load (where UnitClass is usually already answerable) and again
+-- on PLAYER_LOGIN, which is the first point it is guaranteed to work. Both the
+-- options panel and the meters are built later than that.
+ApplyClassAccent = function()
+    local _, classFile = UnitClass("player")
+    if not classFile or issecretvalue(classFile) then return false end
+    local c = (C_ClassColor and C_ClassColor.GetClassColor and C_ClassColor.GetClassColor(classFile))
+        or (RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile])
+    if not c or not c.r then return false end
+
+    DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3] = c.r, c.g, c.b
+    -- accentDim is the pressed/inactive shade of the same hue. Some class
+    -- colours are already dark (warlock purple, rogue yellow is not), so scale
+    -- rather than subtract to keep the hue intact.
+    DR_COLORS.accentDim[1] = c.r * 0.7
+    DR_COLORS.accentDim[2] = c.g * 0.7
+    DR_COLORS.accentDim[3] = c.b * 0.7
+    return true
+end
+ApplyClassAccent()
+
+-- Tint a UIPanelScrollFrameTemplate's scrollbar to match the accent.
+-- The template's internals have changed shape across expansions, so probe for
+-- both: modern retail exposes .Track/.Thumb, older builds a ThumbTexture plus
+-- separate up/down buttons. Anything not found is skipped rather than assumed.
+local function SkinDRScrollBar(scrollFrame)
+    local sb = scrollFrame and (scrollFrame.ScrollBar or scrollFrame.scrollBar)
+    if not sb then return end
+    local a = DR_COLORS.accent
+
+    local thumb = sb.Thumb or sb.ThumbTexture or (sb.GetThumbTexture and sb:GetThumbTexture())
+    if thumb then
+        local tex = thumb.SetVertexColor and thumb
+            or (thumb.Texture or (thumb.GetNormalTexture and thumb:GetNormalTexture()))
+        if tex and tex.SetVertexColor then
+            tex:SetVertexColor(a[1], a[2], a[3], 0.9)
+        end
+    end
+
+    for _, key in ipairs({ "Back", "Forward", "ScrollUpButton", "ScrollDownButton" }) do
+        local btn = sb[key]
+        if btn then
+            for _, getter in ipairs({ "GetNormalTexture", "GetPushedTexture" }) do
+                local t = btn[getter] and btn[getter](btn)
+                if t and t.SetVertexColor then t:SetVertexColor(a[1], a[2], a[3], 0.9) end
+            end
+        end
+    end
+end
 
 -- Helper: thin-bordered backdrop
 ApplyDRBackdrop = function(frame, bgColor, borderColor)
@@ -2273,6 +2334,7 @@ function DPSReport_OpenOptionsPanel()
         local scroll = CreateFrame("ScrollFrame", nil, pageFrame, "UIPanelScrollFrameTemplate")
         scroll:SetPoint("TOPLEFT", pageFrame, "TOPLEFT", 0, 0)
         scroll:SetPoint("BOTTOMRIGHT", pageFrame, "BOTTOMRIGHT", -22, 0)
+        SkinDRScrollBar(scroll)
 
         local child = CreateFrame("Frame", nil, scroll)
         child:SetWidth(PAGE_WIDTH)

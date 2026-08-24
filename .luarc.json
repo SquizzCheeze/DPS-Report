@@ -21,6 +21,7 @@
         "C_Timer",
         "Minimap",
         "UISpecialFrames",
+        "C_ClassColor",
         "RAID_CLASS_COLORS",
         "CLASS_ICON_TCOORDS",
         "C_Spell",
