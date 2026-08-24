@@ -1,0 +1,104 @@
+name: Package and release
+
+# Publishing is deliberately tied to TAGS, not to pushes: work on main as often
+# as you like, and nothing reaches CurseForge until you tag a version.
+#
+#   git tag -a v1.7 -m "V1.7"
+#   git push origin v1.7
+#
+# That builds the zip, uploads it to CurseForge (project 1504877, read from
+# ## X-Curse-Project-ID in the TOC) and attaches it to a GitHub release.
+#
+# Run it from the Actions tab instead to do a dry run: it builds the zip,
+# uploads nothing anywhere, and leaves the file as a downloadable artifact so
+# you can check what would have shipped. Worth doing before every real release,
+# because a CurseForge file is visible to players the moment it uploads and the
+# version number cannot be reused.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build only -- upload nothing, keep the zip as an artifact"
+        type: boolean
+        default: true
+
+permissions:
+  # Needed for the packager to create the GitHub release and attach the zip.
+  contents: write
+
+jobs:
+  package:
+    name: Build and upload
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          # Full history, NOT the default shallow clone: the packager works out
+          # the version from the tag and the changelog range from the commits
+          # since the previous one. A shallow clone silently produces a wrong
+          # version rather than failing.
+          fetch-depth: 0
+
+      # A misnamed or missing secret is NOT an error in GitHub Actions -- it
+      # interpolates to an empty string, and release.sh then skips the upload
+      # silently and still exits 0. Printing the lengths (GitHub masks the
+      # values) is how to tell "never reached the job" from "reached it and was
+      # rejected". Same diagnostic Squizzumables and SquizzFrames carry, for the
+      # same reason.
+      - name: Check secret visibility
+        if: github.event.inputs.dry_run == 'true'
+        env:
+          TOK_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          TOK_KEY: ${{ secrets.CF_API_KEY }}
+        run: |
+          echo "secrets.CF_API_TOKEN length: ${#TOK_TOKEN}"
+          echo "secrets.CF_API_KEY   length: ${#TOK_KEY}"
+          if [ -z "$TOK_TOKEN" ] && [ -z "$TOK_KEY" ]; then
+            echo "NEITHER secret is reaching this job -- CurseForge upload will be skipped silently."
+          fi
+
+      - name: Package
+        uses: BigWigsMods/packager@v2
+        with:
+          # -d skips every upload. Empty on a tag push, so a real release
+          # uploads normally.
+          args: ${{ github.event.inputs.dry_run == 'true' && '-d' || '' }}
+          # pandoc only matters for WoWInterface changelog conversion, and we
+          # don't publish there.
+          pandoc: false
+        env:
+          # Add this under Settings -> Secrets and variables -> Actions.
+          # Token comes from https://authors.curseforge.com/#/settings/api-tokens
+          #
+          # Both names are wired up: release.sh tries CF_API_KEY first, then
+          # CF_API_TOKEN, and takes the first non-empty one -- so the secret
+          # works whichever name it was saved under.
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          # Provided by Actions automatically -- no secret to create.
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+
+      # Watch for "CurseForge ID: 1504877 [token set]" in the packager output.
+      # That suffix is `${cf_token:+ [token set]}` -- NO suffix means the token
+      # is empty, not that the line is just terse.
+      - name: Show what the packager produced
+        if: always() && github.event.inputs.dry_run == 'true'
+        run: ls -laR .release || echo "(no .release directory -- the packager did not get as far as building)"
+
+      - name: Keep the zip from a dry run
+        if: github.event.inputs.dry_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: DPSReport-dry-run
+          path: .release/*.zip
+          # REQUIRED. The packager builds into `.release/`, and upload-artifact
+          # skips hidden paths by default -- without this the artifact comes
+          # back empty (or errors, as below) while the packaging step itself is
+          # perfectly green, which reads exactly like a build failure and is
+          # not one. Cost a night on Squizzumables before it was written down.
+          include-hidden-files: true
+          if-no-files-found: error

@@ -1,0 +1,12 @@
+DPS Report Changelog Archive
+============================
+
+Shipped versions before the current one. The packager reads changelog.txt
+verbatim (see manual-changelog in .pkgmeta), so that file holds only the
+version being built -- otherwise every CurseForge release reposts the whole
+history as its release notes. Older sections move here instead of being
+deleted: many carry root-cause writeups worth grepping before assuming a bug
+is fresh. This file is in the .pkgmeta ignore list, so it never ships.
+
+(No archived versions yet -- v1.7 is the first release published through this
+workflow.)

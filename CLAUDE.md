@@ -8,6 +8,17 @@ DPSReport is a World of Warcraft retail AddOn (Lua) that reports DPS/HPS/stats t
 
 There is no build step, package manager, or test suite — this is a plain Lua addon loaded directly by the WoW client. "Testing" means loading the addon in-game (`/reload`) and exercising it in a group/raid or via `/dps`.
 
+## Releasing
+
+Releases are tag-driven. Pushing a `v*` tag runs `.github/workflows/release.yml`, which packages the addon with BigWigsMods/packager, uploads it to CurseForge (project `1504877`, read from `## X-Curse-Project-ID` in the TOC) and attaches the zip to a GitHub release. Ordinary pushes to `main` publish nothing.
+
+Two things are easy to get wrong:
+
+- `changelog.txt` is uploaded **verbatim** as that release's CurseForge notes, so it must hold only the version being released. Older sections move to `CHANGELOG-ARCHIVE.txt`, which `.pkgmeta` ignores so it never ships. Leaving history in `changelog.txt` makes every release repost the entire backlog.
+- What ships is controlled by the `ignore:` list in `.pkgmeta`, not by `.gitignore`. Dev files (`CLAUDE.md`, `README.md`, `.luarc.json`, `.github`, `.claude`, the changelog archive) are excluded there; `LICENSE` and `changelog.txt` deliberately are not.
+
+Before a real release, run the workflow manually from the Actions tab with `dry_run` ticked — it builds the zip and uploads nothing. A CurseForge file goes live to players the instant it uploads, and its version number can't be reused.
+
 ## Linting
 
 A `.luarc.json` configures the Lua language server (Lua 5.1 runtime, matching WoW's Lua version) with WoW/Blizzard API globals declared under `diagnostics.globals`. When adding calls to new Blizzard API functions or globals, add them to that list or the language server will flag them as undefined.

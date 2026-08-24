@@ -1,3 +1,22 @@
+# Normalise line endings: LF in the repository, native in the working copy.
+# WoW loads either happily; this just stops every checkout on a different
+# machine from showing the whole addon as modified.
 * text=auto eol=lf
-*.png binary
+
+*.lua   text
+*.toc   text
+*.md    text
+*.txt   text
+*.json  text
+*.xml   text
+*.yml   text
+
+# Binary media -- never line-ending converted.
 *.tga binary
+*.blp binary
+*.png binary
+*.jpg binary
+*.ttf binary
+*.otf binary
+*.ogg binary
+*.mp3 binary

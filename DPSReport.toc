@@ -2,6 +2,9 @@
 ## Title: DPS Report
 ## Notes: Lightweight Damage Meter using blizzards built in damage meter API. Uses /dps
 ## Author: Squizzcheeze
+## X-License: MIT
+## X-Curse-Project-ID: 1504877
+## X-Flavor: Mainline
 ## Version: 1.7
 ## SavedVariables: DPSReportDB
 ## IconTexture: Interface\AddOns\DPSReport\Textures\dpsreportingameicon

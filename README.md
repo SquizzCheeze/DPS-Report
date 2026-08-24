@@ -75,3 +75,35 @@ combat taint / secret-value constraints that shape much of it.
 ## Author
 
 Squizzcheeze
+
+## Releasing
+
+Releases are tag-driven via `.github/workflows/release.yml`, which runs
+[BigWigsMods/packager](https://github.com/BigWigsMods/packager) to build the
+zip, upload it to CurseForge (project `1504877`, read from
+`## X-Curse-Project-ID` in the TOC) and attach it to a GitHub release.
+
+1. Write the release notes in `changelog.txt`. This file is uploaded
+   **verbatim** as the CurseForge release notes, so it must contain only the
+   version being released — move the previous section to
+   `CHANGELOG-ARCHIVE.txt` first (that file is never shipped).
+2. Bump `## Version:` in `DPSReport.toc`, commit, and push.
+3. Tag and push:
+
+   ```sh
+   git tag -a v1.8 -m "V1.8"
+   git push origin v1.8
+   ```
+
+To check a build without publishing, run the workflow manually from the
+**Actions** tab with `dry_run` left ticked — it packages, uploads nothing, and
+leaves the zip as a downloadable artifact. Worth doing every time, since a
+CurseForge file is visible to players the moment it uploads and the version
+number can't be reused.
+
+Requires a `CF_API_KEY` (or `CF_API_TOKEN`) repository secret, from
+<https://authors.curseforge.com/#/settings/api-tokens>.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).

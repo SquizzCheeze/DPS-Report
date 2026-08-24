@@ -1,0 +1,14 @@
+DPS Report Changelog
+====================
+
+V1.7
+
+- TODO: replace this section before tagging v1.7.
+
+  This file is uploaded to CurseForge VERBATIM as the release notes for
+  whatever version is being built, so whatever is written here is exactly what
+  players read. Cover only this version, in plain language, from the player's
+  point of view.
+
+  When the release is out, move this whole section to the top of
+  CHANGELOG-ARCHIVE.txt and start a fresh one here for the next version.

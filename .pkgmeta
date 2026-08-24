@@ -1,0 +1,36 @@
+# Packaging metadata for BigWigsMods/packager, used by the release workflow in
+# .github/workflows/release.yml.
+#
+# The addon folder must be named DPSReport when installed -- this is what names
+# the folder inside the zip, and the TOC path in ## IconTexture depends on it.
+package-as: DPSReport
+
+# Hand-written release notes, uploaded verbatim instead of letting the packager
+# synthesise a changelog from commit subjects.
+#
+# "Verbatim" means the WHOLE file, so changelog.txt holds ONLY the version being
+# built -- everything older moves to CHANGELOG-ARCHIVE.txt, which is in the
+# ignore list below. Leaving the history in place makes every CurseForge release
+# repost the entire backlog as that version's release notes.
+manual-changelog:
+  filename: changelog.txt
+  markup-type: text
+
+# Development-only files, kept out of the zip so they never ship to users.
+# LICENSE and changelog.txt are deliberately NOT here: the MIT licence has to
+# travel with the code, and the changelog is worth having offline.
+ignore:
+  - .claude
+  - .github
+  - .vscode
+  - .gitignore
+  - .gitattributes
+  - .luarc.json
+  - .pkgmeta
+  - CLAUDE.md
+  - CHANGELOG-ARCHIVE.txt
+  - README.md
+
+# No libraries are used at all -- the addon is a single Lua file against the
+# stock API -- so there is nothing to check out and no separate no-lib package.
+enable-nolib-creation: no
