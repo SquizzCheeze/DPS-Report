@@ -63,6 +63,23 @@ Changed:
 
 Fixed:
 
+- Meter windows losing their positions and reappearing as a single default
+  window, usually after reloading during combat. Reloading your profile put
+  them back, which is why it looked cosmetic -- it was not. On login the addon
+  waits two seconds before reading your saved meters back in, and during that
+  gap the meter list is empty. Combat ending inside that window triggered a
+  save of the empty list, wiping every stored meter and position; the next
+  login then had nothing to restore and built one fresh window. Reloading mid
+  fight made it likely because combat usually ends a second or two later.
+  Saving is now blocked until the load has actually happened. Layouts already
+  lost cannot be recovered automatically -- reload your profile once more and
+  they will stay put from then on.
+
+- Player names could be written to the saved-variables file while still
+  restricted by the game's combat data rules, which happens on any /reload
+  during a fight. Only fully readable names are stored now. Numbers were
+  already handled this way; names were not.
+
 - Reporting a saved Mythic+ segment while the meter was set to Avoidable
   Damage reported Damage Taken instead. Those are different metrics and the
   segment held both -- it was simply reading the wrong one.

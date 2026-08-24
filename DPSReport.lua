@@ -3746,6 +3746,16 @@ DPSMeter = {}
 DPSMeter.meters = {}
 DPSMeter.segments = {}  -- M+ stored segments only (persisted until reset)
 
+-- Set true by LoadAllMeters. Until then `meters` is empty, and SaveAllMeters
+-- refuses to write, because persisting an empty list wipes every saved meter
+-- and position. LoadAllMeters is deferred ~2s after PLAYER_LOGIN, and plenty
+-- fires inside that window: PLAYER_REGEN_ENABLED -> DoCombatEnd ->
+-- SnapshotSegment -> SaveAllMeters is the one that bites, since reloading mid
+-- fight means combat routinely ends a second later. The wipe was invisible
+-- until the next login, which then took the "first run" branch and rebuilt one
+-- default meter at the default position.
+DPSMeter.metersLoaded = false
+
 -- Reset all meter data and M+ stored segments
 function DPSMeter:ResetAll()
     C_DamageMeter.ResetAllCombatSessions()
@@ -6665,6 +6675,10 @@ end
 
 function DPSMeter:SaveAllMeters()
     if not DPSReportDB or not charKey then return end
+    -- Never persist before the saved meters have been read back in: the list is
+    -- empty until then, and writing it destroys the saved layout. See the note
+    -- on DPSMeter.metersLoaded.
+    if not self.metersLoaded then return end
     if not DPSReportDB.charData then DPSReportDB.charData = {} end
     local saved = {}
     for _, meter in ipairs(self.meters) do
@@ -6679,18 +6693,33 @@ function DPSMeter:SaveAllMeters()
         if meter.entries and #meter.entries > 0 then
             local savedEntries = {}
             for _, e in ipairs(meter.entries) do
-                table.insert(savedEntries, {
-                    name            = e.name,
-                    plainName       = e.plainName,
-                    class           = e.class,
-                    displayValue    = LaunderNumber(e.displayValue),
-                    totalAmount     = LaunderNumber(e.totalAmount),
-                    amountPerSecond = LaunderNumber(e.amountPerSecond),
-                    isPlayer        = e.isPlayer,
-                    specIconID      = e.specIconID,
-                })
+                -- LoadFromAPI stores the raw API name when GUID resolution
+                -- fails, so in combat e.name can be a secret value. Numbers go
+                -- through LaunderNumber, but the name never did -- and a
+                -- PLAYER_LOGOUT mid-fight (any /reload in combat) writes it
+                -- straight into SavedVariables. Persist only plain names; a
+                -- dropped cosmetic name is repopulated by the next LoadFromAPI.
+                local plain = e.name
+                if plain ~= nil and issecretvalue(plain) then plain = nil end
+                if plain ~= nil then
+                    table.insert(savedEntries, {
+                        name            = plain,
+                        plainName       = (e.plainName ~= nil
+                            and not issecretvalue(e.plainName)) and e.plainName or nil,
+                        class           = (e.class ~= nil
+                            and not issecretvalue(e.class)) and e.class or nil,
+                        displayValue    = LaunderNumber(e.displayValue),
+                        totalAmount     = LaunderNumber(e.totalAmount),
+                        amountPerSecond = LaunderNumber(e.amountPerSecond),
+                        isPlayer        = e.isPlayer,
+                        specIconID      = (e.specIconID ~= nil
+                            and not issecretvalue(e.specIconID)) and e.specIconID or nil,
+                    })
+                end
             end
-            entry.entries = savedEntries
+            if #savedEntries > 0 then
+                entry.entries = savedEntries
+            end
         end
         if meter.frame then
             -- Only save absolute position for free (non-snapped) frames.
@@ -6725,6 +6754,9 @@ function DPSMeter:SaveAllMeters()
 end
 
 function DPSMeter:LoadAllMeters()
+    -- Set before anything else: the migrations at the end of this function, and
+    -- the LoadFromAPI calls below, both save, and they must be allowed through.
+    self.metersLoaded = true
     local charData = DPSReportDB and DPSReportDB.charData and DPSReportDB.charData[charKey]
     -- Restore M+ stored segments
     if charData and charData.segments then

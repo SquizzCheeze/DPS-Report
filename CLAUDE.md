@@ -62,6 +62,10 @@ Note the shallow fill loop in `LoadSettings` (`if prof[k] == nil then prof[k] = 
 
 Meter window layout (position, size, mode, session, snap relationships) is stored per-profile in `settings.meterLayout` and reapplied via `ApplyMeterLayoutFromSettings`, separate from `DPSMeter:SaveAllMeters()/LoadAllMeters()` which persists the meter list itself.
 
+These two stores update on very different schedules, and that is deliberate. `SaveAllMeters` writes `charData[charKey].meters` on every drag, resize, mode change and logout — it is the live position. `SaveMeterLayoutToSettings` writes `settings.meterLayout` **only** when the user clicks "Save Current" or creates a profile — the profile is a snapshot you explicitly take, and "Load Profile" restoring it is the user's recovery path when the live position goes wrong. Do not wire layout saving into the live events; that removes the recovery path.
+
+`DPSMeter.metersLoaded` guards `SaveAllMeters` against writing before `LoadAllMeters` has run. `LoadAllMeters` is deferred ~2s after `PLAYER_LOGIN`, so between login and that call `DPSMeter.meters` is empty — and any save in that window persists an empty list, destroying every saved meter and position. The next login then takes the "first run" branch and rebuilds one default meter at the default position. `PLAYER_REGEN_ENABLED` → `DoCombatEnd` → `SnapshotSegment` → `SaveAllMeters` is the path that actually triggers it, which is why it presented as "reloading during combat loses my layout". Any new `SaveAllMeters` caller inherits the guard; do not bypass it.
+
 ### Addon inter-communication
 
 Uses `C_ChatInfo.RegisterAddonMessagePrefix("DPSReport")` + `CHAT_MSG_ADDON` to broadcast/receive nicknames between group members running the addon (`BroadcastNickname`/`OnAddonMessage`), populating the shared `nicknameCache`.
