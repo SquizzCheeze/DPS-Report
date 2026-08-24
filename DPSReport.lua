@@ -977,8 +977,8 @@ local function CollectSummaryPlayers(seg)
     local function Row(name)
         local r = players[name]
         if not r then
-            r = { name = name, damage = 0, healing = 0, interrupts = 0,
-                  dispels = 0, deaths = 0, avoidable = 0 }
+            r = { name = name, damage = 0, healing = 0, dps = 0, hps = 0,
+                  interrupts = 0, dispels = 0, deaths = 0, avoidable = 0 }
             players[name] = r
             order[#order + 1] = r
         end
@@ -1020,6 +1020,19 @@ local function CollectSummaryPlayers(seg)
                     r.class      = r.class or e.class
                     r.isPlayer   = r.isPlayer or e.isPlayer
                     r[field]     = tonumber(e.totalAmount) or 0
+                end
+            end
+        end
+    end
+
+    -- Rate modes are read from amountPerSecond rather than totalAmount, which
+    -- on a dps/hps session is the same running total the damage mode carries.
+    for _, modeName in ipairs({ "dps", "hps" }) do
+        local md = seg.modes and seg.modes[modeName]
+        if md and md.entries then
+            for _, e in ipairs(md.entries) do
+                if e.name and e.name ~= "" and e.name ~= "?" then
+                    Row(e.name)[modeName] = tonumber(e.amountPerSecond) or 0
                 end
             end
         end
@@ -1138,17 +1151,19 @@ local function BuildMythicSummaryReport(segIndex)
         end
     end
 
+    -- The setting keys still say Damage/Healing: renaming them would reset the
+    -- toggle for anyone who had already turned one off, for no gain.
     if s.autoSummaryTopDamage ~= false then
-        local v, names = TopBy(rows, "damage")
+        local v, names = TopBy(rows, "dps")
         if v then
-            table.insert(lines, string.format("Top DMG: %s (%s)", JoinNames(names), FormatNumber(v)))
+            table.insert(lines, string.format("Top DPS: %s (%s)", JoinNames(names), FormatNumber(v)))
         end
     end
 
     if s.autoSummaryTopHealing ~= false then
-        local v, names = TopBy(rows, "healing")
+        local v, names = TopBy(rows, "hps")
         if v then
-            table.insert(lines, string.format("Top Healing: %s (%s)", JoinNames(names), FormatNumber(v)))
+            table.insert(lines, string.format("Top HPS: %s (%s)", JoinNames(names), FormatNumber(v)))
         end
     end
 
@@ -2439,8 +2454,8 @@ function DPSReport_OpenOptionsPanel()
     local summaryLines = {
         { key = "autoSummaryHeader",     text = "Dungeon name, level and time" },
         { key = "autoSummaryMVP",        text = "MVP" },
-        { key = "autoSummaryTopDamage",  text = "Top damage" },
-        { key = "autoSummaryTopHealing", text = "Top healing" },
+        { key = "autoSummaryTopDamage",  text = "Top DPS" },
+        { key = "autoSummaryTopHealing", text = "Top HPS" },
         { key = "autoSummaryInterrupts", text = "Top interrupts" },
         { key = "autoSummaryDispels",    text = "Top dispels" },
         { key = "autoSummaryAvoidable",  text = "Least avoidable damage" },

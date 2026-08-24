@@ -10,8 +10,8 @@ New:
 
     --- Ara-Kara, City of Echoes +12 completed in 28:41 ---
     MVP: Bobhealz
-    Top DMG: Squizzcheeze (48.2M)
-    Top Healing: Bobhealz (31.7M)
+    Top DPS: Squizzcheeze (1.68M)
+    Top HPS: Bobhealz (1.10M)
     Top Interrupts: Tankboi (14)
     Top Dispels: Bobhealz (9)
     Least Avoidable DMG: Squizzcheeze (412K)
