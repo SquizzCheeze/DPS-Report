@@ -986,12 +986,15 @@ local function CollectSummaryPlayers(seg)
         return r
     end
 
+    -- Deaths is NOT in here: that session returns one entry per death event,
+    -- not one per player, and every entry's totalAmount is 0 (the count is the
+    -- number of rows). Reading totalAmount gave "Deaths: none" on a run with
+    -- ten of them. It is counted separately below.
     local FIELD_BY_MODE = {
         damage     = "damage",
         healing    = "healing",
         interrupts = "interrupts",
         dispels    = "dispels",
-        deaths     = "deaths",
         avoidable  = "avoidable",
     }
 
@@ -1021,6 +1024,25 @@ local function CollectSummaryPlayers(seg)
                     r.class      = r.class or e.class
                     r.isPlayer   = r.isPlayer or e.isPlayer
                     r[field]     = tonumber(e.totalAmount) or 0
+                end
+            end
+        end
+    end
+
+    -- Deaths. New segments arrive already folded to one entry per player with
+    -- totalAmount holding the count, so that is used when present. Segments
+    -- recorded before that fix still hold one zero-valued entry per death, and
+    -- counting rows gets those right too -- which keeps old saved runs readable.
+    do
+        local md = seg.modes and seg.modes.deaths
+        if md and md.entries then
+            for _, e in ipairs(md.entries) do
+                if e.name and e.name ~= "" and e.name ~= "?" then
+                    local r = Row(e.name)
+                    r.specIconID = r.specIconID or e.specIconID
+                    r.class      = r.class or e.class
+                    local n = tonumber(e.totalAmount) or 0
+                    r.deaths = r.deaths + (n > 0 and n or 1)
                 end
             end
         end
@@ -3955,6 +3977,42 @@ end
 
 -- Shared helper: build entries from GetCombatSessionFromID for a given mode.
 -- Returns a table of entry objects (same shape as LoadFromAPI entries).
+-- Collapse a deaths list to one entry per player.
+--
+-- Deaths is not shaped like the other metrics: the session returns one
+-- combatSource per death EVENT, each with totalAmount 0, so a player who died
+-- twice appears twice and their count is the number of rows. Every consumer has
+-- to fold them or it shows a column of zeroes with duplicated names. Takes
+-- entries the caller has already built, so name resolution stays in one place.
+local function AggregateDeathEntries(entries)
+    local byKey, order = {}, {}
+    for i, e in ipairs(entries) do
+        -- Read the incoming amount BEFORE any table is zeroed below: the first
+        -- row of a player becomes the accumulator itself.
+        local n = LaunderNumber(e.totalAmount)
+        local add = (n and n > 0) and n or 1
+
+        local guid = e.sourceGUID
+        if guid == "?" or guid == "" then guid = nil end
+        -- A table key must be plain -- a secret name would throw. A row with
+        -- neither a resolved name nor a plain GUID (mid-combat) gets a unique
+        -- key so it stands alone instead of merging with somebody else.
+        local key = e.plainName or guid or ("row" .. i)
+
+        local acc = byKey[key]
+        if not acc then
+            acc = e
+            acc.displayValue, acc.totalAmount, acc.amountPerSecond = 0, 0, 0
+            byKey[key] = acc
+            order[#order + 1] = acc
+        end
+        acc.displayValue = acc.displayValue + add
+        acc.totalAmount  = acc.totalAmount + add
+    end
+    table.sort(order, function(a, b) return a.totalAmount > b.totalAmount end)
+    return order
+end
+
 local function BuildEntriesFromSessionID(sessionID, modeName, maxCount)
     local meterType = METER_MODE_MAP[modeName]
     if not meterType then return {} end
@@ -3980,6 +4038,9 @@ local function BuildEntriesFromSessionID(sessionID, modeName, maxCount)
             sourceGUID      = src.sourceGUID ~= nil and SafeStr(src.sourceGUID) or nil,
             specIconID      = src.specIconID,
         })
+    end
+    if modeName == "deaths" then
+        return AggregateDeathEntries(entries)
     end
     return entries
 end
@@ -4068,7 +4129,17 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
                     spells          = spells,
                 })
             end
-            modes[modeName] = { entries = entries, totalAmount = LaunderNumber(session.totalAmount) }
+            local total = LaunderNumber(session.totalAmount)
+            if modeName == "deaths" then
+                -- Fold the per-event rows into per-player counts before they are
+                -- stored, so the segment holds one entry per player and every
+                -- later reader (chat reports, the seg: meter mode, the run
+                -- summary) sees a real count instead of a list of zeroes.
+                entries = AggregateDeathEntries(entries)
+                total = 0
+                for _, e in ipairs(entries) do total = total + (e.totalAmount or 0) end
+            end
+            modes[modeName] = { entries = entries, totalAmount = total }
         end
     end
 
@@ -4262,6 +4333,11 @@ function MeterProto:LoadFromAPI()
             sourceGUID   = src.sourceGUID ~= nil and SafeStr(src.sourceGUID) or nil,
             specIconID   = src.specIconID,
         })
+    end
+
+    -- This mode returns one row per death event; fold to one row per player.
+    if self.mode == "deaths" then
+        self.entries = AggregateDeathEntries(self.entries)
     end
 end
 

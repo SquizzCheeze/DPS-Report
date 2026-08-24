@@ -100,3 +100,10 @@ Fixed:
   panel; the arguments the header comment listed (/dps hps, /dps overall,
   /dps whisper Name and the rest) were never implemented, and /dpsreport was
   never registered. The documentation now matches what the addon does.
+
+- Deaths were reported as "none" on runs where people had clearly died, and a
+  Deaths meter listed everyone at zero with some names appearing twice. Deaths
+  is not shaped like the other metrics: the game returns one row per death
+  rather than a running total per player, so a player who died twice appeared
+  twice and every row read zero. Rows are now folded into a count per player,
+  which fixes the meter, the summary line and Deaths-mode reports together.
