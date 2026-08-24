@@ -1,0 +1,15 @@
+# Claude Code local machine settings
+.claude/settings.local.json
+
+# WoW SavedVariables (never live in the addon folder, but just in case)
+*.lua.bak
+SavedVariables/
+
+# OS / editor cruft
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/

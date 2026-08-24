@@ -1,0 +1,12 @@
+## Interface: 120100
+## Title: DPS Report
+## Notes: Lightweight Damage Meter using blizzards built in damage meter API. Uses /dps
+## Author: Squizzcheeze
+## Version: 1.7
+## SavedVariables: DPSReportDB
+## IconTexture: Interface\AddOns\DPSReport\Textures\dpsreportingameicon
+## AddonCompartmentFunc: DPSReport_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: DPSReport_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: DPSReport_OnAddonCompartmentLeave
+
+DPSReport.lua
