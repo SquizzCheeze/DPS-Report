@@ -19,6 +19,8 @@ Two things are easy to get wrong:
 
 Before a real release, run the workflow manually from the Actions tab with `dry_run` ticked — it builds the zip and uploads nothing. A CurseForge file goes live to players the instant it uploads, and its version number can't be reused.
 
+**Versioning:** increment the last number — 1.20 → 1.21 → 1.22. The jump from 1.7 straight to 1.20 was deliberate (1.20 is "twenty", not "point two"), so do not "correct" it back to 1.8/1.9. Note this sorts below 1.8 under numeric comparison; CurseForge and addon managers key "latest" off upload recency rather than parsing the string, so it does not matter in practice.
+
 ## Linting
 
 A `.luarc.json` configures the Lua language server (Lua 5.1 runtime, matching WoW's Lua version) with WoW/Blizzard API globals declared under `diagnostics.globals`. When adding calls to new Blizzard API functions or globals, add them to that list or the language server will flag them as undefined.
