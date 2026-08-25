@@ -18,6 +18,7 @@ local reportWidget
 local DPSMeter
 local SnapshotSegment
 local SnapshotMythicRun
+local AggregateDeathEntries
 local METER_MODE_MAP
 local DR_COLORS
 local ApplyDRBackdrop
@@ -253,6 +254,295 @@ local function QueueGroupInspections()
         end
     end
     ProcessInspectQueue()
+end
+
+-- ============================================================================
+-- Death tracking (feign-death aware)
+-- ============================================================================
+-- C_DamageMeter's Deaths metric counts Feign Death as a real death: the hunter
+-- is flagged dead for the duration and the session records an entry for it, so
+-- a hunter who never actually died routinely reports five or six.
+--
+-- Polling UnitIsDeadOrGhost() per group unit and edge-detecting the false->true
+-- transition does not have that problem -- a feigning hunter reads as alive
+-- there -- and it keeps working mid-key, where C_DamageMeter's own values are
+-- secret. Polling is also the only option left: the combat log is gone from the
+-- addon API in 12.0, and UNIT_DIED never fired reliably for off-screen members.
+-- Squizzumables' M+ death tally is built the same way and is where the approach
+-- was proven.
+--
+-- So for deaths we do not correct the API's list -- mid-key its rows carry no
+-- readable name or GUID to match against, so correcting row by row is
+-- impossible. We source the list ourselves and substitute it wholesale, and
+-- fall back to the API only when we cannot prove our own tally is complete.
+local DeathTracker = {
+    overall  = {},   -- GUID -> deaths since the Overall session was reset
+    current  = {},   -- GUID -> deaths in the combat currently in progress
+    run      = {},   -- GUID -> deaths since the key started (Blizzard's scope)
+    info     = {},   -- GUID -> { name = full name, class = classFilename }
+    wasDead  = {},   -- GUID -> true while this death has already been counted
+    armed    = {},   -- scope -> true once a poll has run since that scope reset
+    startedAt = {},  -- scope -> GetTime() when the current tally began
+    keyDeaths = nil, -- GetDeathCount() captured at CHALLENGE_MODE_COMPLETED
+    runFromStart = false, -- true when we were polling from CHALLENGE_MODE_START
+    keepAlive = false,
+    ticker   = nil,
+}
+
+local DEATH_SCOPES = { "overall", "current", "run" }
+
+local function IsKeyActive()
+    return (C_ChallengeMode and C_ChallengeMode.IsChallengeModeActive
+        and C_ChallengeMode.IsChallengeModeActive()) and true or false
+end
+
+function DeathTracker:Poll()
+    local numGroup = GetNumGroupMembers()
+    local prefix, count
+    if numGroup > 1 then
+        prefix = IsInRaid() and "raid" or "party"
+        count  = IsInRaid() and numGroup or (numGroup - 1)
+    end
+    -- i == 0 is "player": in a party the player has no partyN token, and in a
+    -- raid they have both. Duplicates are harmless -- everything is keyed by
+    -- GUID, and wasDead stops the second visit counting again.
+    for i = 0, (count or 0) do
+        local unit = (i == 0) and "player" or (prefix .. i)
+        -- UnitIsPlayer keeps pets and guardians out: they die constantly and
+        -- are not people the report should be naming.
+        if UnitExists(unit) and UnitIsPlayer(unit) then
+            local guid  = UnitGUID(unit)
+            local dead  = UnitIsDeadOrGhost(unit)
+            local feign = UnitIsFeignDeath(unit)
+            -- These read plain for group members in practice, keys included --
+            -- but an identity-restricted unit would hand back secrets, and
+            -- comparing one throws, so skip a unit we cannot read rather than
+            -- guess at it. PrintDiagnostics reports which ones those were.
+            if guid and not issecretvalue(guid)
+               and not issecretvalue(dead) and not issecretvalue(feign) then
+                local uname, realm = UnitName(unit)
+                if uname and not issecretvalue(uname) then
+                    if realm and realm ~= "" and not issecretvalue(realm) then
+                        uname = uname .. "-" .. realm
+                    end
+                    local _, classFile = UnitClass(unit)
+                    if issecretvalue(classFile) then classFile = nil end
+                    self.info[guid] = { name = uname, class = classFile }
+                end
+
+                -- UnitIsFeignDeath is belt and braces: a feigning hunter
+                -- already reads as alive above. It costs nothing and covers us
+                -- if that ever stops being true.
+                if dead and not feign then
+                    if not self.wasDead[guid] then
+                        self.wasDead[guid] = true
+                        self.overall[guid] = (self.overall[guid] or 0) + 1
+                        self.current[guid] = (self.current[guid] or 0) + 1
+                        self.run[guid]     = (self.run[guid]     or 0) + 1
+                    end
+                else
+                    self.wasDead[guid] = nil
+                end
+            end
+        end
+    end
+
+    -- Stamp when a tally started covering its session, so the completeness
+    -- tests below can tell later whether it saw the whole thing.
+    for _, scope in ipairs(DEATH_SCOPES) do
+        if not self.armed[scope] then
+            self.startedAt[scope] = GetTime()
+            self.armed[scope] = true
+        end
+    end
+
+    -- Self-healing: an abandoned key never fires CHALLENGE_MODE_COMPLETED, so
+    -- drop the keep-alive as soon as the key is gone rather than tick forever.
+    if self.keepAlive and not IsKeyActive() then self.keepAlive = false end
+end
+
+function DeathTracker:Start()
+    -- Poll immediately so anyone alive at the start clears their stale wasDead
+    -- flag from a previous fight; without that a player who died, ran back and
+    -- died again would only ever be counted once.
+    self:Poll()
+    if self.ticker then return end
+    self.ticker = C_Timer.NewTicker(0.5, function() DeathTracker:Poll() end)
+end
+
+function DeathTracker:Stop()
+    -- Bail before Poll if we were never started: polling arms the tally, and an
+    -- unarmed tally is exactly what tells the callers not to trust it.
+    if not self.ticker then return end
+    -- Inside a key we keep polling between pulls. Those deaths are what the run
+    -- summary reports, and combat in a key stops and starts constantly.
+    if self.keepAlive then
+        self:Poll()
+        return
+    end
+    self.ticker:Cancel()
+    self.ticker = nil
+    self:Poll()  -- final sample, so a death in the last half second still lands
+end
+
+-- Reset a tally to match a session reset. wasDead is deliberately NOT cleared:
+-- someone lying dead across the reset has already been counted, and re-arming
+-- their flag would credit them a second death on the next poll.
+function DeathTracker:Reset(scope)
+    wipe(self[scope])
+    self.armed[scope] = false
+end
+
+function DeathTracker:Total(scope)
+    local n = 0
+    for _, v in pairs(self[scope]) do n = n + v end
+    return n
+end
+
+-- Blizzard's own death counter for the key. It is plain even mid-key, and it is
+-- feign-free by construction -- it is what adds the timer penalty, so a
+-- feigning hunter would be griefing every key if it counted them. It carries no
+-- per-player breakdown, which is why we still tally ourselves; as a *total* it
+-- is the proof that our breakdown is not missing anything.
+function DeathTracker:KeyDeathCount()
+    if IsKeyActive() then
+        local ok, n = pcall(C_ChallengeMode.GetDeathCount)
+        if ok and n and not issecretvalue(n) and type(n) == "number" then return n end
+        return nil
+    end
+    return self.keyDeaths  -- captured at CHALLENGE_MODE_COMPLETED
+end
+
+-- Fallback completeness test for the Overall session outside a key, where there
+-- is no GetDeathCount to check against. Watched time is wall clock and session
+-- duration counts only combat, so watched >= duration holds comfortably
+-- whenever we have been running since the session began, and fails clearly
+-- after a /reload mid-run -- where the Overall session survives but our table
+-- restarts empty, and trusting it would erase real deaths instead of feigns.
+--
+-- durationSeconds is on the secret list, and comparing a secret throws. Thrown
+-- from here it took the meter's refresh ticker down with it, which is what
+-- "deaths stopped updating mid-run" looked like.
+function DeathTracker:CoversOverallByDuration()
+    if not self.armed.overall or not self.startedAt.overall then return false end
+    local ok, dur = pcall(C_DamageMeter.GetSessionDurationSeconds,
+        Enum.DamageMeterSessionType.Overall)
+    if not ok or not dur or issecretvalue(dur) or type(dur) ~= "number" then
+        return false
+    end
+    return (GetTime() - self.startedAt.overall) + 3 >= dur
+end
+
+-- The deaths list for `scope` built from our own tally, or nil meaning "fall
+-- back to whatever C_DamageMeter reports". An EMPTY table is a real answer --
+-- we watched and nobody died -- so callers must test for nil, not emptiness.
+function DeathTracker:BuildEntries(scope)
+    local tally
+    if scope == "current" then
+        -- We reset this and start polling at the pull, so once armed it has
+        -- seen the whole combat by construction.
+        if not self.armed.current then return nil end
+        tally = self.current
+    elseif scope == "overall" then
+        -- In a key, and for as long as the Overall session still holds only
+        -- that key, the run tally IS the overall session.
+        if self.armed.run and (self.runFromStart or self.keyDeaths) then
+            if not self.runFromStart then
+                -- We joined the key late (logged in or reloaded mid-run), so
+                -- only Blizzard's own total can say whether we caught all of
+                -- it. Short of it, leave the game's counts alone.
+                local keyTotal = self:KeyDeathCount()
+                if not keyTotal or self:Total("run") < keyTotal then return nil end
+            end
+            -- Note we do NOT re-check the total when runFromStart: we polled the
+            -- whole key, and GetDeathCount can lead our poll by up to one tick,
+            -- which would flicker the list back to the API's on every death.
+            tally = self.run
+        else
+            if not self:CoversOverallByDuration() then return nil end
+            tally = self.overall
+        end
+    else
+        return nil
+    end
+
+    local selfGUID = UnitGUID("player")
+    local out = {}
+    for guid, n in pairs(tally) do
+        if n > 0 then
+            local info = self.info[guid]
+            local full = info and info.name
+            -- `name` must be the SHORT name. SnapshotMythicRun stores every
+            -- mode's entries under a short name, and CollectSummaryPlayers keys
+            -- its rows off it -- a "Bob-Realm" here would not merge with the
+            -- "Bob" the damage list carries, and the summary would rank a
+            -- phantom player who did nothing but die.
+            local short = full and (full:match("^([^%-]+)") or full) or "?"
+            out[#out + 1] = {
+                name            = short,
+                plainName       = full,
+                class           = info and info.class,
+                sourceGUID      = guid,
+                isPlayer        = (guid == selfGUID),
+                displayValue    = n,
+                totalAmount     = n,
+                amountPerSecond = 0,
+            }
+        end
+    end
+    -- pairs() order is undefined, so ties must break on something stable or the
+    -- bars shuffle on every refresh.
+    table.sort(out, function(a, b)
+        if a.totalAmount ~= b.totalAmount then return a.totalAmount > b.totalAmount end
+        return (a.name or "") < (b.name or "")
+    end)
+    return out
+end
+
+-- Print what the poll can and cannot see, to your own chat frame only.
+--
+-- Which units the game lets an addon read is not documented and varies with the
+-- restrictions in force, so this is the only way to check it from in game.
+function DeathTracker:PrintDiagnostics()
+    local function P(s) print("|cff00ccff[DPSReport]|r " .. s) end
+    local keyTotal = self:KeyDeathCount()
+    P(string.format("Death tracking: poll %s, key active=%s, key deaths=%s, "
+        .. "our run total=%d, own list used for Overall=%s",
+        self.ticker and "running" or "stopped", tostring(IsKeyActive()),
+        keyTotal and tostring(keyTotal) or "n/a", self:Total("run"),
+        tostring(self:BuildEntries("overall") ~= nil)))
+
+    local numGroup = GetNumGroupMembers()
+    local prefix, count
+    if numGroup > 1 then
+        prefix = IsInRaid() and "raid" or "party"
+        count  = IsInRaid() and numGroup or (numGroup - 1)
+    end
+    for i = 0, (count or 0) do
+        local unit = (i == 0) and "player" or (prefix .. i)
+        if UnitExists(unit) then
+            local guid  = UnitGUID(unit)
+            local dead  = UnitIsDeadOrGhost(unit)
+            local feign = UnitIsFeignDeath(unit)
+            local uname = UnitName(unit)
+            if not uname or issecretvalue(uname) then uname = "?" end
+
+            local blocked = {}
+            if not UnitIsPlayer(unit) then blocked[#blocked + 1] = "not a player" end
+            if not guid or issecretvalue(guid) then blocked[#blocked + 1] = "guid" end
+            if issecretvalue(dead) then blocked[#blocked + 1] = "dead" end
+            if issecretvalue(feign) then blocked[#blocked + 1] = "feign" end
+
+            if #blocked == 0 then
+                P(string.format("  %s (%s): readable, dead=%s feign=%s, counted run=%d overall=%d current=%d",
+                    unit, uname, dead and "yes" or "no", feign and "yes" or "no",
+                    self.run[guid] or 0, self.overall[guid] or 0, self.current[guid] or 0))
+            else
+                P(string.format("  %s (%s): SKIPPED on %s - keeps the game's own count",
+                    unit, uname, table.concat(blocked, ", ")))
+            end
+        end
+    end
 end
 
 -- ============================================================================
@@ -848,6 +1138,47 @@ local function BuildReport(meterType, sessionType, topCount)
     local isPerSecond = PER_SECOND_TYPES[meterType]
     local label = TYPE_LABELS[meterType] or "Unknown"
 
+    -- Deaths is one row per death EVENT, every one of them valued zero, so the
+    -- generic path below reports a column of "0" under duplicated names. Fold it
+    -- the way the meters do -- which also strips the Feign Death rows the API
+    -- counts as deaths -- and report plain counts: a percentage of a death toll
+    -- means nothing, and neither does an abbreviated "3".
+    if meterType == Enum.DamageMeterType.Deaths then
+        local entries = {}
+        for i = 1, #sources do
+            local src = sources[i]
+            local plainName = ResolveSourcePlainName(src)
+            entries[i] = {
+                name        = plainName or SafeStr(src.name),
+                plainName   = plainName,
+                totalAmount = src.totalAmount,
+                isPlayer    = src.isLocalPlayer,
+                sourceGUID  = src.sourceGUID ~= nil and SafeStr(src.sourceGUID) or nil,
+            }
+        end
+        entries = AggregateDeathEntries(entries,
+            sessionType == Enum.DamageMeterSessionType.Overall and "overall" or "current")
+        if #entries == 0 then
+            return nil, "No deaths recorded."
+        end
+        local total = 0
+        for _, e in ipairs(entries) do total = total + e.totalAmount end
+
+        local lines = {}
+        if settings and settings.showTotalInHeader ~= false then
+            table.insert(lines, string.format("--- %s Report - Total: %d ---", label, total))
+        else
+            table.insert(lines, string.format("--- %s Report ---", label))
+        end
+        for i = 1, math.min(topCount, #entries) do
+            local e = entries[i]
+            local marker = (settings and settings.showSelfMarker ~= false) and e.isPlayer and " (*)" or ""
+            table.insert(lines, string.format("%d. %s%s - %d",
+                i, DisplayName(e.name), marker, e.totalAmount))
+        end
+        return lines
+    end
+
     local lines = {}
     if settings and settings.showTotalInHeader ~= false then
         table.insert(lines, string.format("--- %s Report - Total: %s ---",
@@ -968,11 +1299,34 @@ local function ResolveEntryRole(e)
     return "DAMAGER"
 end
 
+-- True for a real group member, false for a pet or guardian.
+--
+-- C_DamageMeter lists pets as their own sources rather than folding them into
+-- the owner, and the summary lines have no business ranking them: a mage's
+-- water elemental takes no avoidable damage, so it won a "least avoidable
+-- damage" award that belongs to a player. Only a character's GUID starts with
+-- "Player-" (a pet's starts with "Pet-" or "Creature-"), which is the one
+-- signal that never lies, so it is checked first. Segments captured before the
+-- GUID was stored fall back to specIconID, which the API sets on players and
+-- never on pets.
+local function IsGroupPlayerEntry(e)
+    if e.isPlayer then return true end  -- the local player, GUID or not
+    local guid = e.sourceGUID
+    -- SafeStr can hand back a still-tainted string, and comparing one throws.
+    if guid and not issecretvalue(guid) and type(guid) == "string"
+       and guid ~= "" and guid ~= "?" then
+        return guid:sub(1, 7) == "Player-"
+    end
+    return e.specIconID ~= nil
+end
+
 -- Collapse a segment's per-mode entry lists into one row per player.
 -- The roster is the union of every mode, because a mode omits players with no
 -- data for it -- a DPS who took zero avoidable damage simply isn't in that
 -- list, and treating "absent" as "no data" instead of "zero" is what makes
 -- "least avoidable damage" pick the right person.
+-- Pets are skipped entirely: they are group damage, but they are not people and
+-- cannot win or lose an award.
 local function CollectSummaryPlayers(seg)
     local players, order = {}, {}
     local function Row(name)
@@ -1004,7 +1358,7 @@ local function CollectSummaryPlayers(seg)
         local md = seg.modes and seg.modes[seedMode]
         if md and md.entries then
             for _, e in ipairs(md.entries) do
-                if e.name and e.name ~= "" and e.name ~= "?" then
+                if e.name and e.name ~= "" and e.name ~= "?" and IsGroupPlayerEntry(e) then
                     local r = Row(e.name)
                     r.specIconID = r.specIconID or e.specIconID
                     r.class      = r.class or e.class
@@ -1018,7 +1372,7 @@ local function CollectSummaryPlayers(seg)
         local md = seg.modes and seg.modes[modeName]
         if md and md.entries then
             for _, e in ipairs(md.entries) do
-                if e.name and e.name ~= "" and e.name ~= "?" then
+                if e.name and e.name ~= "" and e.name ~= "?" and IsGroupPlayerEntry(e) then
                     local r = Row(e.name)
                     r.specIconID = r.specIconID or e.specIconID
                     r.class      = r.class or e.class
@@ -1037,7 +1391,7 @@ local function CollectSummaryPlayers(seg)
         local md = seg.modes and seg.modes.deaths
         if md and md.entries then
             for _, e in ipairs(md.entries) do
-                if e.name and e.name ~= "" and e.name ~= "?" then
+                if e.name and e.name ~= "" and e.name ~= "?" and IsGroupPlayerEntry(e) then
                     local r = Row(e.name)
                     r.specIconID = r.specIconID or e.specIconID
                     r.class      = r.class or e.class
@@ -1054,7 +1408,7 @@ local function CollectSummaryPlayers(seg)
         local md = seg.modes and seg.modes[modeName]
         if md and md.entries then
             for _, e in ipairs(md.entries) do
-                if e.name and e.name ~= "" and e.name ~= "?" then
+                if e.name and e.name ~= "" and e.name ~= "?" and IsGroupPlayerEntry(e) then
                     Row(e.name)[modeName] = tonumber(e.amountPerSecond) or 0
                 end
             end
@@ -1325,6 +1679,7 @@ end
 
 -- Shared combat-end cleanup: stop tickers, snapshot, rebuild caches.
 local function DoCombatEnd()
+    DeathTracker:Stop()
     for _, meter in ipairs(DPSMeter.meters) do
         meter.inCombat = false
         meter:StopRefreshTicker()
@@ -1495,7 +1850,29 @@ f:SetScript("OnEvent", function(self, event, ...)
             DPSMeter:LoadAllMeters()
         end)
         C_Timer.After(4, BroadcastNickname)
+        -- A /reload mid-key misses CHALLENGE_MODE_START, and the run tally
+        -- depends on it. Pick the key back up here. The tally still starts from
+        -- zero and so will read short of GetDeathCount for the rest of the run,
+        -- which is exactly how the callers know to leave the game's counts alone.
+        C_Timer.After(2, function()
+            if C_ChallengeMode and C_ChallengeMode.IsChallengeModeActive
+               and C_ChallengeMode.IsChallengeModeActive() then
+                DeathTracker.keepAlive = true
+                DeathTracker:Start()
+            end
+        end)
     elseif event == "PLAYER_REGEN_DISABLED" then
+        -- Tally this fight's deaths ourselves; C_DamageMeter's Deaths metric
+        -- counts Feign Death as one and we cannot tell them apart after the fact.
+        DeathTracker:Reset("current")
+        -- A fight that is not part of a key means the Overall session no longer
+        -- holds only the last key, so the run tally stops standing in for it.
+        if not (C_ChallengeMode and C_ChallengeMode.IsChallengeModeActive
+                and C_ChallengeMode.IsChallengeModeActive()) then
+            DeathTracker.keyDeaths = nil
+            DeathTracker.runFromStart = false
+        end
+        DeathTracker:Start()
         RefreshRosterCache()
         -- Mark in-combat for all meter instances
         for _, meter in ipairs(DPSMeter.meters) do
@@ -1537,6 +1914,14 @@ f:SetScript("OnEvent", function(self, event, ...)
             local n = select(1, C_ChallengeMode.GetMapUIInfo(cmID))
             if n and n ~= "" then activeRunInfo.name = n end
         end
+        -- Track deaths for the whole key, not just for combat: keepAlive holds
+        -- the poll open between pulls so a death after a wipe still lands, and
+        -- the run tally is what the summary reports.
+        DeathTracker.keyDeaths = nil
+        DeathTracker:Reset("run")
+        DeathTracker.keepAlive = true
+        DeathTracker.runFromStart = true
+        DeathTracker:Start()
         -- Reset all meters (including overallTime) when a new key starts
         if settings and settings.resetOnMythicStart then
             DPSMeter:ResetAll()
@@ -1560,6 +1945,18 @@ f:SetScript("OnEvent", function(self, event, ...)
                     if info.members and #info.members > 0 then
                         completionMembers = info.members
                     end
+                end
+            end
+
+            -- Blizzard's key death total, captured here for the same reason as
+            -- everything else in this block: GetDeathCount stops answering once
+            -- the key is over, and the snapshot happens seconds later. It is
+            -- what proves our own per-player tally did not miss anything.
+            DeathTracker:Poll()  -- final sample before the run tally is judged
+            if C_ChallengeMode and C_ChallengeMode.GetDeathCount then
+                local okD, deaths = pcall(C_ChallengeMode.GetDeathCount)
+                if okD and deaths and not issecretvalue(deaths) and type(deaths) == "number" then
+                    DeathTracker.keyDeaths = deaths
                 end
             end
 
@@ -2824,6 +3221,23 @@ function DPSReport_OpenOptionsPanel()
     previewNote:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
     yOffset = yOffset - 34
 
+    local deathDiagBtn = CreateDRButton(content, "Death Tracking Diagnostics", 200, 26)
+    deathDiagBtn:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    deathDiagBtn:SetScript("OnClick", function()
+        DeathTracker:PrintDiagnostics()
+    end)
+    yOffset = yOffset - 34
+
+    local deathDiagNote = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    deathDiagNote:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    deathDiagNote:SetWidth(340)
+    deathDiagNote:SetJustifyH("LEFT")
+    deathDiagNote:SetText("Prints which group members the addon can read death "
+        .. "state for. Feign Death is only filtered out for readable players; "
+        .. "the rest keep the game's own count. Your chat frame only.")
+    deathDiagNote:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+    yOffset = yOffset - 46
+
     local resetBtn = CreateDRButton(content, "Reset to Defaults", 140, 26, DR_COLORS.danger)
     resetBtn:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
     resetBtn:SetScript("OnClick", function()
@@ -3843,6 +4257,13 @@ DPSMeter.metersLoaded = false
 -- Reset all meter data and M+ stored segments
 function DPSMeter:ResetAll()
     C_DamageMeter.ResetAllCombatSessions()
+    -- Our own death tally is scoped to the Overall session, so it has to be
+    -- cleared with it or a fresh key inherits the last one's deaths.
+    DeathTracker:Reset("overall")
+    DeathTracker:Reset("current")
+    -- The run tally stands in for the Overall session inside a key, so a manual
+    -- reset mid-key has to clear it too or Overall keeps showing pre-reset deaths.
+    DeathTracker:Reset("run")
     self.segments = {}
     for _, m in ipairs(self.meters) do
         m.entries = {}
@@ -3975,16 +4396,25 @@ FindAPISession = function(sessionID)
     return nil
 end
 
--- Shared helper: build entries from GetCombatSessionFromID for a given mode.
--- Returns a table of entry objects (same shape as LoadFromAPI entries).
--- Collapse a deaths list to one entry per player.
+-- Produce a deaths list of one entry per player.
 --
--- Deaths is not shaped like the other metrics: the session returns one
--- combatSource per death EVENT, each with totalAmount 0, so a player who died
--- twice appears twice and their count is the number of rows. Every consumer has
--- to fold them or it shows a column of zeroes with duplicated names. Takes
--- entries the caller has already built, so name resolution stays in one place.
-local function AggregateDeathEntries(entries)
+-- `scope` ("overall" / "current") lets DeathTracker answer instead. That is the
+-- preferred path: its tally never counts Feign Death, and it holds plain names
+-- and GUIDs even mid-key, where C_DamageMeter's rows carry neither. Pass nil
+-- for data the tracker holds no tally for -- a saved combat session pulled back
+-- by ID -- and the API's own rows are used. An empty list from the tracker is a
+-- real answer ("nobody died"), which is why it is tested for nil, not for #.
+--
+-- The fallback below folds the API's rows, which are not shaped like any other
+-- metric: the session returns one combatSource per death EVENT, each with
+-- totalAmount 0, so a player who died twice appears twice and their count is
+-- the number of rows. Unfolded it shows a column of zeroes with duplicated
+-- names. Takes entries the caller has already built, so name resolution stays
+-- in one place.
+AggregateDeathEntries = function(entries, scope)
+    local own = scope and DeathTracker:BuildEntries(scope)
+    if own then return own end
+
     local byKey, order = {}, {}
     for i, e in ipairs(entries) do
         -- Read the incoming amount BEFORE any table is zeroed below: the first
@@ -4009,10 +4439,13 @@ local function AggregateDeathEntries(entries)
         acc.displayValue = acc.displayValue + add
         acc.totalAmount  = acc.totalAmount + add
     end
+
     table.sort(order, function(a, b) return a.totalAmount > b.totalAmount end)
     return order
 end
 
+-- Shared helper: build entries from GetCombatSessionFromID for a given mode.
+-- Returns a table of entry objects (same shape as LoadFromAPI entries).
 local function BuildEntriesFromSessionID(sessionID, modeName, maxCount)
     local meterType = METER_MODE_MAP[modeName]
     if not meterType then return {} end
@@ -4135,7 +4568,7 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
                 -- stored, so the segment holds one entry per player and every
                 -- later reader (chat reports, the seg: meter mode, the run
                 -- summary) sees a real count instead of a list of zeroes.
-                entries = AggregateDeathEntries(entries)
+                entries = AggregateDeathEntries(entries, "overall")
                 total = 0
                 for _, e in ipairs(entries) do total = total + (e.totalAmount or 0) end
             end
@@ -4335,9 +4768,11 @@ function MeterProto:LoadFromAPI()
         })
     end
 
-    -- This mode returns one row per death event; fold to one row per player.
+    -- This mode returns one row per death event; fold to one row per player,
+    -- and correct the count against observed deaths (see AggregateDeathEntries).
     if self.mode == "deaths" then
-        self.entries = AggregateDeathEntries(self.entries)
+        self.entries = AggregateDeathEntries(self.entries,
+            self.session == "overall" and "overall" or "current")
     end
 end
 

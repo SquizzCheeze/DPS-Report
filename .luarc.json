@@ -75,6 +75,9 @@
         "UnitExists",
         "UnitGroupRolesAssigned",
         "UnitGUID",
+        "UnitIsPlayer",
+        "UnitIsDeadOrGhost",
+        "UnitIsFeignDeath",
         "CanInspect",
         "NotifyInspect",
         "issecretvalue"

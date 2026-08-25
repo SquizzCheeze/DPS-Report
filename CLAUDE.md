@@ -47,6 +47,30 @@ Two mode-name namespaces exist and are easy to confuse: `TYPE_MAP` keys (`dtaken
 
 `BuildSegmentReport` sorts a *copy* of `modeData.entries` before ranking. The entry list is shared with the live meter, so sorting it in place would reorder bars underneath the user.
 
+### Deaths
+
+Deaths is the one metric where `C_DamageMeter` is not the source of truth, and `AggregateDeathEntries` (~L4395) is the single choke point every reader goes through: `MeterProto:LoadFromAPI`, `SnapshotMythicRun`, `BuildEntriesFromSessionID`, and the deaths branch of `BuildReport`. Anything new that reads deaths must go through it too.
+
+It gets the list wrong in two ways. The session returns **one `combatSource` per death event**, each with `totalAmount` 0 — a player who died twice appears twice and the count is the number of rows, not any value on them. And it counts **Feign Death as a real death**, so a hunter who never died reports five or six.
+
+Nothing in the session data separates a feign from a death afterwards, so `DeathTracker` (~L259–535) keeps its own tally instead: a 0.5s ticker over group units, edge-detecting `UnitIsDeadOrGhost` false→true. A feigning hunter reads as *alive* there, which is the whole point — `UnitIsFeignDeath` is kept as a second check but is not what does the work. Polling is also the only option left: the combat log is gone from the addon API in 12.0, and `UNIT_DIED` never fired reliably for off-screen members. Squizzumables' M+ death tally works the same way and is where the approach was proven.
+
+**The tracker substitutes the whole list rather than correcting rows.** `AggregateDeathEntries(entries, scope)` calls `DeathTracker:BuildEntries(scope)` first and returns it if it is non-nil, folding the API's rows only as a fallback. Row-by-row correction was tried and cannot work: mid-key the API's rows carry no readable name or GUID to match a tally against, while unit APIs stay plain throughout. An empty list from the tracker is a real answer ("nobody died"), so callers must test it for nil, never for `#`.
+
+`BuildEntries` emits **short** names in `name` (full name in `plainName`). `SnapshotMythicRun` stores every mode under a short name and `CollectSummaryPlayers` keys its rows off it — a "Bob-Realm" here would not merge with the damage list's "Bob", and the summary would rank a phantom player who did nothing but die.
+
+Three scopes, because they answer to different resets: `current` (per-fight, reset on `PLAYER_REGEN_DISABLED`), `overall` (reset with `DPSMeter:ResetAll()`, which is what resets the Overall session), and `run` (reset on `CHALLENGE_MODE_START`, matching Blizzard's own key scope). Inside a key `run` stands in for `overall`, since they cover the same thing.
+
+When the tracker declines to answer, that is deliberate — a tally that started late must not be trusted, because reporting zero for a player we never watched deletes real deaths rather than feigns:
+
+- `runFromStart` is set at `CHALLENGE_MODE_START`. With it, the run tally is used unconditionally. It is deliberately **not** re-checked against `GetDeathCount()`, which can lead the poll by up to one tick and would flicker the list back to the API's on every death.
+- Without it (logged in or reloaded mid-key) `C_ChallengeMode.GetDeathCount()` is the tiebreak. It is plain even mid-key and feign-free by construction — it is what adds the timer penalty — but has no per-player breakdown, so it serves only as proof that our breakdown is complete. It stops answering once the key ends, so it is captured at `CHALLENGE_MODE_COMPLETED` into `keyDeaths` alongside the other completion data, and cleared when a non-key fight starts.
+- Outside a key there is no such total, so `CoversOverallByDuration` compares watched wall-clock against the session's combat time. Note `durationSeconds` is on the secret list and **comparing a secret throws** — thrown from there it took `MeterProto`'s refresh ticker down with it, which presented as a meter that silently stopped updating rather than as an error.
+
+`UnitIsPlayer` gates the poll, so pets never enter the tally. `IsGroupPlayerEntry` (~L1200) does the same job on the *summary* side for the API-sourced modes: `C_DamageMeter` lists a mage's water elemental as its own source, and since a pet takes no avoidable damage it won "Least Avoidable DMG" outright. The test is the GUID prefix (`Player-` vs `Pet-`/`Creature-`), falling back to `specIconID` for segments saved before GUIDs were stored. It gates `CollectSummaryPlayers` only — the live meters still show pet damage, which is what people want there.
+
+`DeathTracker:PrintDiagnostics()` — the "Death Tracking Diagnostics" button under Tools — prints per unit whether `guid`/`dead`/`feign` came back readable or restricted, plus both totals. Which units the game lets an addon read is not documented and cannot be reasoned about from outside the game.
+
 ### The taint/secret-value constraint (critical, non-obvious)
 
 As of WoW 12.0, `C_DamageMeter` values (names, numbers) returned **during combat** are tainted/"secret" Lua values — they cannot be read, concatenated, or converted to plain numbers/strings by addon Lua. This shapes large parts of the code:

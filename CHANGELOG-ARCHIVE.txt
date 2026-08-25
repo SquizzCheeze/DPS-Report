@@ -8,5 +8,109 @@ history as its release notes. Older sections move here instead of being
 deleted: many carry root-cause writeups worth grepping before assuming a bug
 is fresh. This file is in the .pkgmeta ignore list, so it never ships.
 
-(No archived versions yet -- v1.20 is the first release published through this
-workflow.)
+V1.20
+
+New:
+
+- Finishing a Mythic+ key now announces a summary of the run instead of a
+  single metric. It reads:
+
+    --- Ara-Kara, City of Echoes +12 completed in 28:41 ---
+    MVP: Bobhealz
+    Top DPS: Squizzcheeze (1.68M)
+    Top HPS: Bobhealz (1.10M)
+    Top Interrupts: Tankboi (14)
+    Top Dispels: Bobhealz (9)
+    Least Avoidable DMG: Squizzcheeze (412K)
+    Deaths: 3 total (most: Tankboi with 2)
+
+  Every line can be switched off on its own under Auto Report, so you can cut
+  it down to just the parts your group cares about. Lines with nothing to say
+  are dropped automatically -- no "Top Dispels" line on a run with no dispels,
+  and no avoidable-damage line if nobody took any.
+
+- MVP is a role-weighted score. Each player is measured on their share of the
+  group's damage, healing, interrupts and dispels, weighted by what their role
+  is actually responsible for, then penalised for dying and for taking
+  avoidable damage. A healer topping healing beats a DPS topping damage on a
+  run where the healer also dispelled and never died.
+
+- Deaths now name who died most, not just the group total.
+
+- All of this comes from data the addon was already collecting at the end of a
+  run. No combat log parsing was added and nothing extra is tracked during the
+  fight, so there is no performance cost.
+
+- If you would rather announce a single metric, Auto Report has a Format
+  setting: switch it to "Single metric" and pick which one -- DPS, HPS, damage,
+  healing, absorbs, interrupts, dispels, damage taken, avoidable damage or
+  deaths. That lists the whole group for that metric, highest to lowest, so
+  "avoidable damage only" now gives you the full ranking rather than a single
+  highlight line.
+
+- New "Preview Last Run Announce" button under Tools. It prints what the most
+  recent run would have announced, using your current Auto Report settings, to
+  your own chat frame only -- nothing is sent to the group. Use it to tune the
+  settings without having to finish a key each time to see the result.
+
+Changed:
+
+- The interface is now coloured with your class colour instead of gold.
+  Checkboxes, sliders, dropdown highlights, the category markers in the
+  settings sidebar, section headings, scrollbars, title accents and the
+  snap-break buttons all follow it, and it changes per character, so a warlock
+  and a druid look different without touching a setting. Gold remains as a
+  fallback if the class cannot be read for any reason.
+
+- The settings panel is split into categories down the left side --
+  Formatting, Auto Report, Mythic+, Meter, Profiles, Tools -- rather than one
+  long scroll. The panel is wider to fit the sidebar; the options themselves
+  are unchanged and in the same order within each category.
+
+- The end-of-run announce defaults to the summary. If you had Auto Report Type
+  set to a specific metric, switch Format to "Single metric" to get that back
+  -- your metric choice was kept.
+
+- Single-metric reports of a saved run now list everyone rather than stopping
+  at the top-N cut, and are explicitly sorted highest to lowest rather than
+  trusting the order the game hands them back in.
+
+Fixed:
+
+- Meter windows losing their positions and reappearing as a single default
+  window, usually after reloading during combat. Reloading your profile put
+  them back, which is why it looked cosmetic -- it was not. On login the addon
+  waits two seconds before reading your saved meters back in, and during that
+  gap the meter list is empty. Combat ending inside that window triggered a
+  save of the empty list, wiping every stored meter and position; the next
+  login then had nothing to restore and built one fresh window. Reloading mid
+  fight made it likely because combat usually ends a second or two later.
+  Saving is now blocked until the load has actually happened. Layouts already
+  lost cannot be recovered automatically -- reload your profile once more and
+  they will stay put from then on.
+
+- Player names could be written to the saved-variables file while still
+  restricted by the game's combat data rules, which happens on any /reload
+  during a fight. Only fully readable names are stored now. Numbers were
+  already handled this way; names were not.
+
+- Reporting a saved Mythic+ segment while the meter was set to Avoidable
+  Damage reported Damage Taken instead. Those are different metrics and the
+  segment held both -- it was simply reading the wrong one.
+
+- Reporting a saved segment set to Enemy Damage Taken reported the group's own
+  damage done under an "Enemy Damage Taken" heading. Enemy damage is not saved
+  into segments at all, so this now says there is no data for that mode rather
+  than showing the wrong number.
+
+- The slash command help was wrong. /dps has only ever opened the settings
+  panel; the arguments the header comment listed (/dps hps, /dps overall,
+  /dps whisper Name and the rest) were never implemented, and /dpsreport was
+  never registered. The documentation now matches what the addon does.
+
+- Deaths were reported as "none" on runs where people had clearly died, and a
+  Deaths meter listed everyone at zero with some names appearing twice. Deaths
+  is not shaped like the other metrics: the game returns one row per death
+  rather than a running total per player, so a player who died twice appeared
+  twice and every row read zero. Rows are now folded into a count per player,
+  which fixes the meter, the summary line and Deaths-mode reports together.
