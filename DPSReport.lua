@@ -1269,12 +1269,23 @@ end
 -- in METER_MODE_MAP with values already laundered to plain Lua -- so this runs
 -- no C_DamageMeter calls of its own and has no taint constraints to respect.
 
--- Role weights for the MVP score. Each row sums to 1.0, so a player who topped
--- every metric their role is judged on scores 1.0 before penalties.
+-- Role weights for the MVP score. Each row sums to 1.0, and because every
+-- metric is scored against the best performer in it (see ComputeMVP), a player
+-- who topped every metric their role is judged on really does score 1.0 before
+-- penalties -- which was not true while metrics were scored as a share of the
+-- group total.
+--
+-- The healer rows are lower than instinct suggests on purpose. A healer is the
+-- only healer AND does nearly all the dispelling, so both of those metrics are
+-- theirs by default rather than earned; weight stacked on them is weight the
+-- healer cannot lose. A DPS only tops damage by beating three other people for
+-- it. These numbers put an average healer just above the best DPS on a run
+-- where nobody stood out, and let a DPS or tank take it outright when they
+-- actually carried one.
 local MVP_WEIGHTS = {
-    TANK    = { damage = 0.25, healing = 0.05, interrupts = 0.40, dispels = 0.10 },
-    HEALER  = { damage = 0.10, healing = 0.50, interrupts = 0.15, dispels = 0.25 },
-    DAMAGER = { damage = 0.50, healing = 0.05, interrupts = 0.30, dispels = 0.15 },
+    TANK    = { damage = 0.30, healing = 0.05, interrupts = 0.60, dispels = 0.05 },
+    HEALER  = { damage = 0.15, healing = 0.60, interrupts = 0.15, dispels = 0.10 },
+    DAMAGER = { damage = 0.55, healing = 0.05, interrupts = 0.30, dispels = 0.10 },
 }
 local MVP_DEATH_PENALTY     = 0.10  -- per death
 local MVP_AVOIDABLE_PENALTY = 0.20  -- times the player's share of group avoidable damage
@@ -1466,34 +1477,60 @@ local function JoinNames(names, maxShown)
     return s
 end
 
--- Role-weighted MVP, following the same shape StormsDungeonData uses: each
--- metric scored as a share of the group total, weighted by what the player's
--- role is actually responsible for, then penalised for dying and for standing
--- in things. Returns nil when there is nothing to score.
+-- Role-weighted MVP: each metric scored against the best performer in it,
+-- weighted by what the player's role is actually responsible for, then
+-- penalised for dying and for standing in things. Returns nil when there is
+-- nothing to score.
+--
+-- Scoring against the best performer, rather than against the group total, is
+-- what makes the weights mean anything. A share of the group total is not
+-- comparable from one metric to the next: healing is a one-person job, so the
+-- healer holds ~85% of it before doing anything clever, while damage splits
+-- five ways and the very best DPS holds ~30%. Multiplying those by weights and
+-- adding them up handed the healer the award on every run regardless of who
+-- carried -- 0.66 against 0.22 for the top DPS on an even run. Against the best
+-- performer both of those read 1.0, so the weights decide the outcome instead
+-- of the shape of the metric.
 local function ComputeMVP(rows)
     if #rows == 0 then return nil end
 
-    local totals = { damage = 0, healing = 0, interrupts = 0, dispels = 0, avoidable = 0 }
+    local top = { damage = 0, healing = 0, interrupts = 0, dispels = 0 }
+    local totalAvoidable = 0
     for _, r in ipairs(rows) do
-        for k in pairs(totals) do
-            totals[k] = totals[k] + (r[k] or 0)
+        for k in pairs(top) do
+            local v = r[k] or 0
+            if v > top[k] then top[k] = v end
         end
+        totalAvoidable = totalAvoidable + (r.avoidable or 0)
     end
 
-    local function Share(v, total)
-        if not total or total <= 0 then return 0 end
-        return (v or 0) / total
+    -- 1.0 for the best in the group at this, proportionally less for everyone
+    -- else. Zero when nobody did any of it, so a run with no dispels does not
+    -- hand out dispel credit.
+    local function Rel(v, best)
+        if not best or best <= 0 then return 0 end
+        return (v or 0) / best
     end
 
     local bestRow, bestScore
     for _, r in ipairs(rows) do
         local w = MVP_WEIGHTS[ResolveEntryRole(r)] or MVP_WEIGHTS.DAMAGER
-        local score = w.damage     * Share(r.damage,     totals.damage)
-                    + w.healing    * Share(r.healing,    totals.healing)
-                    + w.interrupts * Share(r.interrupts, totals.interrupts)
-                    + w.dispels    * Share(r.dispels,    totals.dispels)
+        -- The avoidable penalty stays a share of the group TOTAL. It is the
+        -- only metric of its kind in the score, so it has nothing to be
+        -- comparable with, and "you took 40% of the group's avoidable damage"
+        -- is the meaningful reading -- against the worst offender it would
+        -- punish whoever stood in the least fire as if they had stood in all
+        -- of it.
+        local avoidShare = 0
+        if totalAvoidable > 0 then
+            avoidShare = (r.avoidable or 0) / totalAvoidable
+        end
+        local score = w.damage     * Rel(r.damage,     top.damage)
+                    + w.healing    * Rel(r.healing,    top.healing)
+                    + w.interrupts * Rel(r.interrupts, top.interrupts)
+                    + w.dispels    * Rel(r.dispels,    top.dispels)
                     - MVP_DEATH_PENALTY     * (r.deaths or 0)
-                    - MVP_AVOIDABLE_PENALTY * Share(r.avoidable, totals.avoidable)
+                    - MVP_AVOIDABLE_PENALTY * avoidShare
         if not bestScore or score > bestScore then
             bestRow, bestScore = r, score
         end
