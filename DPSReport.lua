@@ -1494,23 +1494,17 @@ local function JoinNames(names, maxShown)
     return s
 end
 
--- Role-weighted MVP: each metric scored against the best performer in it,
--- weighted by what the player's role is actually responsible for, then
--- penalised for dying and for standing in things. Returns nil when there is
--- nothing to score.
+-- Score every player, keeping the working so it can be shown as well as ranked.
+-- Returns rows sorted best first, each { row, role, score, parts = {...},
+-- rel = {...}, deathPen, avoidPen }.
 --
--- Scoring against the best performer, rather than against the group total, is
--- what makes the weights mean anything. A share of the group total is not
--- comparable from one metric to the next: healing is a one-person job, so the
--- healer holds ~85% of it before doing anything clever, while damage splits
--- five ways and the very best DPS holds ~30%. Multiplying those by weights and
--- adding them up handed the healer the award on every run regardless of who
--- carried -- 0.66 against 0.22 for the top DPS on an even run. Against the best
--- performer both of those read 1.0, so the weights decide the outcome instead
--- of the shape of the metric.
-local function ComputeMVP(rows)
-    if #rows == 0 then return nil end
-
+-- Tuning MVP_WEIGHTS without looking at real numbers has gone wrong twice now:
+-- simulated runs put the tank's win rate at 1%, and the first two real runs
+-- both went to the tank. Tank win rate turns out to swing from 1% to 22% purely
+-- on how much damage tanks do relative to a top DPS, which is a property of the
+-- group, not of the scoring. So the breakdown is exposed rather than kept
+-- private -- see DPSReport_PrintMVPBreakdown and the Tools button that calls it.
+local function ScoreMVPRows(rows)
     local top = { damage = 0, healing = 0, interrupts = 0, dispels = 0 }
     local totalAvoidable = 0
     for _, r in ipairs(rows) do
@@ -1529,9 +1523,16 @@ local function ComputeMVP(rows)
         return (v or 0) / best
     end
 
-    local bestRow, bestScore
+    local scored = {}
     for _, r in ipairs(rows) do
-        local w = MVP_WEIGHTS[ResolveEntryRole(r)] or MVP_WEIGHTS.DAMAGER
+        local role = ResolveEntryRole(r)
+        local w = MVP_WEIGHTS[role] or MVP_WEIGHTS.DAMAGER
+        local rel, parts, score = {}, {}, 0
+        for k in pairs(top) do
+            rel[k]   = Rel(r[k], top[k])
+            parts[k] = w[k] * rel[k]
+            score    = score + parts[k]
+        end
         -- The avoidable penalty stays a share of the group TOTAL. It is the
         -- only metric of its kind in the score, so it has nothing to be
         -- comparable with, and "you took 40% of the group's avoidable damage"
@@ -1542,17 +1543,38 @@ local function ComputeMVP(rows)
         if totalAvoidable > 0 then
             avoidShare = (r.avoidable or 0) / totalAvoidable
         end
-        local score = w.damage     * Rel(r.damage,     top.damage)
-                    + w.healing    * Rel(r.healing,    top.healing)
-                    + w.interrupts * Rel(r.interrupts, top.interrupts)
-                    + w.dispels    * Rel(r.dispels,    top.dispels)
-                    - MVP_DEATH_PENALTY     * (r.deaths or 0)
-                    - MVP_AVOIDABLE_PENALTY * avoidShare
-        if not bestScore or score > bestScore then
-            bestRow, bestScore = r, score
-        end
+        local deathPen = MVP_DEATH_PENALTY * (r.deaths or 0)
+        local avoidPen = MVP_AVOIDABLE_PENALTY * avoidShare
+        score = score - deathPen - avoidPen
+
+        scored[#scored + 1] = {
+            row = r, role = role, score = score, parts = parts, rel = rel,
+            deathPen = deathPen, avoidPen = avoidPen, avoidShare = avoidShare,
+        }
     end
-    return bestRow
+    table.sort(scored, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return (a.row.name or "") < (b.row.name or "")
+    end)
+    return scored
+end
+
+-- Role-weighted MVP: each metric scored against the best performer in it,
+-- weighted by what the player's role is actually responsible for, then
+-- penalised for dying and for standing in things. Returns nil when there is
+-- nothing to score.
+--
+-- Scoring against the best performer, rather than against the group total, is
+-- what makes the weights mean anything. A share of the group total is not
+-- comparable from one metric to the next: healing is a one-person job, so the
+-- healer holds ~85% of it before doing anything clever, while damage splits
+-- five ways and the very best DPS holds ~30%. Multiplying those by weights and
+-- adding them up handed the healer the award on every run regardless of who
+-- carried -- 0.66 against 0.22 for the top DPS on an even run.
+local function ComputeMVP(rows)
+    if #rows == 0 then return nil end
+    local scored = ScoreMVPRows(rows)
+    return scored[1] and scored[1].row or nil
 end
 
 -- Builds the announce lines for a completed run. Returns lines, or nil + reason.
@@ -1672,6 +1694,57 @@ local function LatestSegmentIndex()
     local segs = DPSMeter and DPSMeter.segments
     if not segs or #segs == 0 then return nil end
     return #segs
+end
+
+-- Print the MVP score with its working, for the most recent run, to your own
+-- chat frame only. One line per player, so a 5-man fits on screen.
+--
+-- This exists because the weights cannot be tuned from a model of what a run
+-- "usually" looks like. Whether the tank wins depends almost entirely on how
+-- much damage tanks do relative to a top DPS in YOUR group -- 50% of a DPS puts
+-- the tank at a 1% win rate, 90% puts them at 22%, and that is a property of
+-- the group and its keys, not of the scoring. Reading the real numbers off a
+-- real run is the only way to tune it honestly.
+function DPSReport_PrintMVPBreakdown(segIndex)
+    segIndex = segIndex or LatestSegmentIndex()
+    local seg = segIndex and DPSMeter and DPSMeter.segments
+        and DPSMeter.segments[segIndex]
+    if not seg then
+        print("|cff00ccff[DPSReport]|r No run recorded yet - finish a Mythic+ key first.")
+        return
+    end
+    local rows = CollectSummaryPlayers(seg)
+    if #rows == 0 then
+        print("|cff00ccff[DPSReport]|r No players in that run's data.")
+        return
+    end
+
+    local scored = ScoreMVPRows(rows)
+    print(string.format("|cff00ccff[DPSReport]|r MVP breakdown - %s (weight x share-of-best):",
+        seg.name or "last run"))
+    for i, s in ipairs(scored) do
+        local w = MVP_WEIGHTS[s.role] or MVP_WEIGHTS.DAMAGER
+        print(string.format(
+            "|cff999999 %d. %s (%s) %.3f = dmg %.2f(%d%%) heal %.2f(%d%%) "
+            .. "kick %.2f(%d%%) disp %.2f(%d%%) - died %.2f - avoid %.2f(%d%%)|r",
+            i, DisplayName(s.row.name), s.role:sub(1, 4), s.score,
+            s.parts.damage,     math.floor((s.rel.damage     or 0) * 100 + 0.5),
+            s.parts.healing,    math.floor((s.rel.healing    or 0) * 100 + 0.5),
+            s.parts.interrupts, math.floor((s.rel.interrupts or 0) * 100 + 0.5),
+            s.parts.dispels,    math.floor((s.rel.dispels    or 0) * 100 + 0.5),
+            s.deathPen, s.avoidPen, math.floor((s.avoidShare or 0) * 100 + 0.5)))
+    end
+    -- The raw figures behind the percentages, so the shares can be checked.
+    local top = { damage = 0, healing = 0, interrupts = 0, dispels = 0 }
+    for _, r in ipairs(rows) do
+        for k in pairs(top) do
+            if (r[k] or 0) > top[k] then top[k] = r[k] end
+        end
+    end
+    print(string.format("|cff999999    group best: damage %s, healing %s, "
+        .. "interrupts %s, dispels %s|r",
+        FormatNumber(top.damage), FormatNumber(top.healing),
+        FormatCount(top.interrupts), FormatCount(top.dispels)))
 end
 
 -- Register slash command
@@ -3274,6 +3347,23 @@ function DPSReport_OpenOptionsPanel()
         .. "settings above.")
     previewNote:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
     yOffset = yOffset - 34
+
+    local mvpBtn = CreateDRButton(content, "Explain Last Run MVP", 200, 26)
+    mvpBtn:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    mvpBtn:SetScript("OnClick", function()
+        DPSReport_PrintMVPBreakdown()
+    end)
+    yOffset = yOffset - 34
+
+    local mvpNote = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    mvpNote:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    mvpNote:SetWidth(340)
+    mvpNote:SetJustifyH("LEFT")
+    mvpNote:SetText("Shows how the MVP score was reached for each player -- the "
+        .. "weight for their role times their share of the group best, per "
+        .. "metric, minus penalties. Your chat frame only.")
+    mvpNote:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+    yOffset = yOffset - 46
 
     local deathDiagBtn = CreateDRButton(content, "Death Tracking Diagnostics", 200, 26)
     deathDiagBtn:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)

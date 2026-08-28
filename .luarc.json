@@ -36,6 +36,7 @@
         "DPSReport_OnAddonCompartmentClick",
         "DPSReport_OnAddonCompartmentEnter",
         "DPSReport_OnAddonCompartmentLeave",
+        "DPSReport_PrintMVPBreakdown",
         "DPSReport_OpenOptionsPanel",
         "DPSReport_ToggleWidget",
         "DPSReport_ToggleMeter",
