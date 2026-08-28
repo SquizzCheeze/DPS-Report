@@ -8,6 +8,42 @@ history as its release notes. Older sections move here instead of being
 deleted: many carry root-cause writeups worth grepping before assuming a bug
 is fresh. This file is in the .pkgmeta ignore list, so it never ships.
 
+V1.21
+
+Fixed:
+
+- Feign Death was being counted as a death. A hunter who never died could show
+  six deaths on the meter and in the end-of-run announce. The game's own damage
+  meter flags a feigning hunter as dead and records it, and nothing in that data
+  separates the two afterwards, so deaths are no longer read from it. The addon
+  now watches each group member directly and counts real deaths itself -- a
+  feigning hunter reads as alive, so feigns simply never enter the count. This
+  works while the key is running, not just once it finishes.
+
+  Where it cannot vouch for its own count -- if you log in or reload partway
+  through a key, so it missed the earlier part -- it falls back to the game's
+  number rather than reporting a total it knows is short. In that case
+  Blizzard's own key death counter is used to check whether anything was
+  actually missed, so a reload before anyone has died costs you nothing.
+
+- Pets were competing for the run summary awards. A mage's water elemental
+  takes no avoidable damage, so it won "Least Avoidable DMG" outright, and pets
+  could place in the damage rankings and skew the MVP score. Awards now cover
+  party members only. The live meters still show pet damage as before -- this
+  affects the end-of-run announce, not what you see during the fight.
+
+- Deaths reports sent to chat listed one line per death event, every one of them
+  reading zero, with names repeated. They now report a count per player, the
+  same way the meter does.
+
+New:
+
+- "Death Tracking Diagnostics" button under Tools. Prints, to your own chat
+  frame only, which group members the addon can read death state for and how
+  many deaths it has counted for each, next to the game's own total for the key.
+  Useful if a death count ever looks wrong and you want to see why.
+
+
 V1.20
 
 New:
