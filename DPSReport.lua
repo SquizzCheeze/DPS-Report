@@ -2051,7 +2051,7 @@ f:SetScript("OnEvent", function(self, event, ...)
         DeathTracker:Start()
         -- Reset all meters (including overallTime) when a new key starts
         if settings and settings.resetOnMythicStart then
-            DPSMeter:ResetAll()
+            DPSMeter:ResetAll(true)  -- keep segments: the last run is still worth reading
         end
     elseif event == "CHALLENGE_MODE_COMPLETED" then
         do
@@ -4398,8 +4398,15 @@ DPSMeter.segments = {}  -- M+ stored segments only (persisted until reset)
 -- default meter at the default position.
 DPSMeter.metersLoaded = false
 
--- Reset all meter data and M+ stored segments
-function DPSMeter:ResetAll()
+-- Reset all meter data. Stored M+ segments go too, unless `keepSegments`.
+--
+-- The automatic reset at CHALLENGE_MODE_START passes keepSegments, because the
+-- segments ARE the run history and wiping them at the start of the next key is
+-- how you lose the run you just finished -- along with everything that reads it:
+-- "Preview Last Run Announce", "Explain Last Run MVP", and any meter parked on
+-- a seg: session. Only an explicit "Reset all meter data?" from the meter's
+-- clear button throws them away, where the user asked for exactly that.
+function DPSMeter:ResetAll(keepSegments)
     C_DamageMeter.ResetAllCombatSessions()
     -- Our own death tally is scoped to the Overall session, so it has to be
     -- cleared with it or a fresh key inherits the last one's deaths.
@@ -4408,10 +4415,14 @@ function DPSMeter:ResetAll()
     -- The run tally stands in for the Overall session inside a key, so a manual
     -- reset mid-key has to clear it too or Overall keeps showing pre-reset deaths.
     DeathTracker:Reset("run")
-    self.segments = {}
+    if not keepSegments then
+        self.segments = {}
+    end
     for _, m in ipairs(self.meters) do
         m.entries = {}
-        if m.session and m.session:sub(1, 4) == "seg:" then
+        -- Only evict a meter from a stored segment when that segment is being
+        -- destroyed; otherwise leave it showing the run it was pointed at.
+        if not keepSegments and m.session and m.session:sub(1, 4) == "seg:" then
             m.session = "current"
             if m.sessionDropdown then
                 m.sessionDropdown:SetSelectedValue("current")
@@ -4424,6 +4435,54 @@ function DPSMeter:ResetAll()
         self.widgetSessionDrop:SetItems(self.BuildWidgetSessionItems())
     end
     self:SaveAllMeters()
+end
+
+-- Stored runs were capped by accident until now: the reset at the start of every
+-- key threw the lot away. With the history surviving that reset it needs a real
+-- limit, because a completed key snapshots at roughly 64KB -- unbounded, that is
+-- half a megabyte of saved variables a week for anyone running keys daily.
+local MAX_SEGMENTS = 10
+
+-- Drop the oldest runs down to MAX_SEGMENTS.
+--
+-- Meters and the report widget address segments by INDEX ("seg:3"), so removing
+-- from the front shifts every later run down one and the references have to move
+-- with them -- otherwise a meter silently starts showing a different dungeon.
+-- Anything pointing at a run that just fell off the end goes back to live data.
+function DPSMeter:PruneSegments()
+    local excess = #self.segments - MAX_SEGMENTS
+    if excess <= 0 then return end
+    for _ = 1, excess do
+        table.remove(self.segments, 1)
+    end
+
+    local function Reindex(session)
+        if type(session) ~= "string" or session:sub(1, 4) ~= "seg:" then
+            return session
+        end
+        local idx = tonumber(session:sub(5))
+        if not idx then return "current" end
+        local moved = idx - excess
+        if moved < 1 then return "current" end
+        return "seg:" .. moved
+    end
+
+    for _, m in ipairs(self.meters) do
+        local moved = Reindex(m.session)
+        if moved ~= m.session then
+            m.session = moved
+            if m.sessionDropdown then m.sessionDropdown:SetSelectedValue(moved) end
+            m:LoadFromAPI()
+            m:RefreshDisplay()
+        end
+        if m.RefreshSessionDropdown then m:RefreshSessionDropdown() end
+    end
+    if widgetState then
+        widgetState.session = Reindex(widgetState.session)
+    end
+    if self.widgetSessionDrop and self.BuildWidgetSessionItems then
+        self.widgetSessionDrop:SetItems(self.BuildWidgetSessionItems())
+    end
 end
 
 -- Create a new independent meter instance
@@ -4763,6 +4822,7 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
         targets  = targets,
     }
     table.insert(DPSMeter.segments, segment)
+    DPSMeter:PruneSegments()
     DPSMeter:SaveAllMeters()
 
     for _, meter in ipairs(DPSMeter.meters) do
