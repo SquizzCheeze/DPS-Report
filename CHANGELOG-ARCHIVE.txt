@@ -8,6 +8,52 @@ history as its release notes. Older sections move here instead of being
 deleted: many carry root-cause writeups worth grepping before assuming a bug
 is fresh. This file is in the .pkgmeta ignore list, so it never ships.
 
+V1.22
+
+Fixed:
+
+- The healer won MVP on practically every run. The score measured each player
+  as a share of the group's total for a metric, and those shares are not
+  comparable: healing is a one-person job, so a healer holds around 85% of the
+  group's healing before doing anything clever, while damage is split five ways
+  and even the best DPS holds about 30%. Weighting those against each other
+  meant the healer started roughly three times ahead of anyone else and the
+  run itself barely mattered.
+
+  Each metric is now measured against the best performer in the group at it, so
+  topping healing and topping damage are both worth the same before the role
+  weights are applied. The weights were retuned to match, using several thousand
+  simulated runs plus real ones, and checked so that a couple of extra
+  interrupts cannot flip an award that was otherwise decided.
+
+  In practice the award now moves around: the best DPS on a run where they
+  carried, the healer on a run where they did, and either can lose it by dying
+  or by standing in things.
+
+- Finishing a Mythic+ key erased the run you had just completed. If "Reset
+  meters on Mythic+ start" was switched on, starting the next key threw away
+  every stored run along with the meter numbers -- so "Preview Last Run
+  Announce" had nothing to show, and any meter left displaying a saved run
+  jumped back to live data. The automatic reset now clears the meter numbers
+  only. The Reset button on the meter itself still clears everything, which is
+  what it is for.
+
+  Stored runs are capped at the ten most recent, since that automatic reset was
+  the only thing keeping the list from growing forever.
+
+New:
+
+- "Explain Last Run MVP" button under Tools. Prints, to your own chat frame
+  only, how each player's MVP score was reached: their share of the group best
+  for each metric, what their role's weight made of it, and the penalties for
+  dying and for avoidable damage. It reads:
+
+    1. Squizz (DAMA) 0.839 = dmg 0.69(96%) heal 0.00(7%) kick 0.11(71%)
+       disp 0.08(100%) - died 0.00 - avoid 0.04(22%)
+
+  Useful when the MVP is not who you expected and you want to see why.
+
+
 V1.21
 
 Fixed:

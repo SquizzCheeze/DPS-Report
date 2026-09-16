@@ -1,11 +1,11 @@
-## Interface: 120100
+## Interface: 120100, 120105
 ## Title: DPS Report
 ## Notes: Lightweight Damage Meter using blizzards built in damage meter API. Uses /dps
 ## Author: Squizzcheeze
 ## X-License: MIT
 ## X-Curse-Project-ID: 1504877
 ## X-Flavor: Mainline
-## Version: 1.22
+## Version: 1.23
 ## SavedVariables: DPSReportDB
 ## IconTexture: Interface\AddOns\DPSReport\Textures\dpsreportingameicon
 ## AddonCompartmentFunc: DPSReport_OnAddonCompartmentClick

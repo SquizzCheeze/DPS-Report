@@ -975,6 +975,40 @@ local function EntryDisplayName(entry)
     return apiName or ""
 end
 
+--- The strongest STABLE identity a breakdown row can offer, or nil when the
+--- game is hiding all of them.
+---
+--- Selection used to be keyed on sourceGUID alone. That reads fine until the
+--- unit's identity is secret, at which point SafeStr launders every GUID to
+--- the same "?" -- so every row compares equal to the stored selection, the
+--- sidebar highlights all of them at once, and re-selecting after a refresh
+--- lands on whichever "?" row came first rather than the one that was picked.
+--- 12.1.5 widens that window considerably: sourceGUID becomes secret whenever
+--- the unit's identity is, rather than only during combat.
+---
+--- nil is a real answer -- "this row cannot be told apart from its neighbours"
+--- -- and the caller falls back to the row INDEX, which is stable for as long
+--- as the list is not rebuilt underneath it.
+local function BreakdownKey(entry)
+    if not entry then return nil end
+    -- The local player is identifiable whatever the restrictions.
+    if entry.isPlayer then return "self" end
+
+    local guid = entry.sourceGUID
+    if type(guid) == "string" and guid ~= "" and guid ~= "?"
+        and not issecretvalue(guid) then
+        return guid
+    end
+
+    -- Second best: a name we already resolved to plain text. Prefixed so a
+    -- name can never collide with a GUID.
+    local name = entry.plainName
+    if type(name) == "string" and name ~= "" and not issecretvalue(name) then
+        return "n:" .. name
+    end
+    return nil
+end
+
 -- Resolve a plain source name for live API entries.
 -- Uses the strongest identifiers first (GUID), then spec/class caches as fallback.
 local function ResolveSourcePlainName(src)
@@ -1748,6 +1782,42 @@ function DPSReport_PrintMVPBreakdown(segIndex)
 end
 
 -- Register slash command
+-- /rl -> ReloadUI, claimed only if nothing else answers it.
+--
+-- Blizzard ships /reload, never /rl; the short form is an addon convention.
+-- Taking it from an addon that already provides it would be rude and might
+-- replace a richer version, so this checks first and skips quietly. Deferred
+-- to PLAYER_LOGIN so addons loading after this file are visible to the check.
+--
+-- Both registries are consulted: hash_SlashCmdList (uppercased, slash
+-- included) holds what has been imported, SlashCmdList holds what has been
+-- registered since -- the import wipes the latter as it moves entries over.
+do
+    local function TakenAlready()
+        local hash = _G.hash_SlashCmdList
+        if hash and hash["/RL"] then return true end
+        for name in pairs(SlashCmdList) do
+            local i = 1
+            local cmd = _G["SLASH_" .. name .. i]
+            while cmd do
+                if strupper(cmd) == "/RL" then return true end
+                i = i + 1
+                cmd = _G["SLASH_" .. name .. i]
+            end
+        end
+        return false
+    end
+
+    local f = CreateFrame("Frame")
+    f:RegisterEvent("PLAYER_LOGIN")
+    f:SetScript("OnEvent", function(self)
+        self:UnregisterEvent("PLAYER_LOGIN")
+        if TakenAlready() then return end
+        SLASH_DPSREPORTRELOAD1 = "/rl"
+        SlashCmdList["DPSREPORTRELOAD"] = function() ReloadUI() end
+    end)
+end
+
 SLASH_DPSREPORT1 = "/dps"
 SlashCmdList["DPSREPORT"] = function()
     DPSReport_OpenOptionsPanel()
@@ -4508,7 +4578,11 @@ function DPSMeter:NewMeter(cfg)
         tooltipFrame = nil,
         tooltipRows  = {},
         breakdownFrame = nil,
-        breakdownSelectedGUID = nil,
+        -- Which breakdown row is selected, held two ways: by identity where
+        -- the game allows one (BreakdownKey) and always by row index, which
+        -- is what keeps exactly one row highlighted when it does not.
+        breakdownSelectedKey = nil,
+        breakdownSelectedIndex = nil,
         snapTo     = {},
     }, MeterProto)
     table.insert(self.meters, meter)
@@ -6545,19 +6619,13 @@ function MeterProto:CreateBreakdownFrame()
     local bdModeDrop = CreateMeterDropdown(titleBar, 80, bdModeItems, self.mode, function(value)
         frame.bdMode = value
         meter:LoadBreakdownEntries()
-        meter:PopulateSidebar()
-        local selEntry
-        for _, e in ipairs(frame.bdEntries) do
-            if e.sourceGUID == meter.breakdownSelectedGUID then selEntry = e; break end
-        end
+        -- Resolve BEFORE the sidebar is drawn: the highlight is keyed on the
+        -- row index this sets.
+        local selEntry = meter:ResolveBreakdownSelection()
         if selEntry then
+            meter:PopulateSidebar()
             meter:PopulateSpells(selEntry)
             meter:PopulateTargets(selEntry)
-        elseif frame.bdEntries[1] then
-            meter.breakdownSelectedGUID = frame.bdEntries[1].sourceGUID
-            meter:PopulateSidebar()
-            meter:PopulateSpells(frame.bdEntries[1])
-            meter:PopulateTargets(frame.bdEntries[1])
         else
             meter:PopulateSidebar()
             meter:PopulateSpells(nil)
@@ -6837,6 +6905,47 @@ function MeterProto:LayoutBreakdownSections()
 end
 
 -- Load entries for the breakdown window independently of the main meter
+--- Record the row the user just clicked.
+function MeterProto:SelectBreakdownRow(index, entry)
+    self.breakdownSelectedIndex = index
+    self.breakdownSelectedKey = BreakdownKey(entry)
+end
+
+--- Re-find the selection after the entry list has been rebuilt (mode change,
+--- session change, refresh), and return the entry it now points at.
+---
+--- Identity first, so a row that can be told apart keeps its selection even
+--- when the ordering changes underneath it; row index second, which is the
+--- best available answer while the game is hiding identities. Falls back to
+--- the first row rather than losing the selection entirely.
+function MeterProto:ResolveBreakdownSelection()
+    local frame = self.breakdownFrame
+    local entries = (frame and frame.bdEntries) or {}
+    if #entries == 0 then
+        self.breakdownSelectedIndex = nil
+        return nil
+    end
+
+    local key = self.breakdownSelectedKey
+    if key then
+        for i, e in ipairs(entries) do
+            if BreakdownKey(e) == key then
+                self.breakdownSelectedIndex = i
+                return e
+            end
+        end
+    end
+
+    local index = self.breakdownSelectedIndex
+    if not index or index > #entries then index = 1 end
+    self.breakdownSelectedIndex = index
+    local entry = entries[index]
+    -- Re-key off whatever is on screen now: identities can become readable
+    -- again (leaving a key), or stop being readable (clearing it).
+    self.breakdownSelectedKey = BreakdownKey(entry)
+    return entry
+end
+
 function MeterProto:LoadBreakdownEntries()
     local frame = self.breakdownFrame
     if not frame then return end
@@ -6963,8 +7072,10 @@ function MeterProto:PopulateSidebar()
                 row.nameText:SetTextColor(1, 1, 1)
             end
 
-            -- Highlight selected
-            local isSelected = (entry.sourceGUID == self.breakdownSelectedGUID)
+            -- Highlight selected, BY ROW INDEX. An identity comparison here
+            -- highlighted every row at once whenever the game hid identities,
+            -- because they all launder to the same "?" -- see BreakdownKey.
+            local isSelected = (i == self.breakdownSelectedIndex)
             if isSelected then
                 row.bg:SetColorTexture(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3], 0.25)
             else
@@ -6973,7 +7084,7 @@ function MeterProto:PopulateSidebar()
 
             -- Click to select
             row:SetScript("OnClick", function()
-                self.breakdownSelectedGUID = entry.sourceGUID
+                self:SelectBreakdownRow(i, entry)
                 self:PopulateSidebar()
                 self:PopulateSpells(entry)
                 self:PopulateTargets(entry)
@@ -7266,7 +7377,7 @@ function MeterProto:PopulateSegments()
             -- Select first entry after session change
             local entries = frame.bdEntries or {}
             if entries[1] then
-                self.breakdownSelectedGUID = entries[1].sourceGUID
+                self:SelectBreakdownRow(1, entries[1])
                 self:PopulateSidebar()
                 self:PopulateSpells(entries[1])
                 self:PopulateTargets(entries[1])
@@ -7319,12 +7430,19 @@ function MeterProto:ShowBreakdown(entry)
     -- Load breakdown entries independently
     self:LoadBreakdownEntries()
 
-    self.breakdownSelectedGUID = entry.sourceGUID
+    -- The clicked entry comes from the METER's own list, not from bdEntries,
+    -- so seed the identity and let the resolve find its row -- falling back to
+    -- the first row when the two lists cannot be matched up, which is what
+    -- happens while identities are hidden.
+    self.breakdownSelectedKey = BreakdownKey(entry)
+    self.breakdownSelectedIndex = nil
+    local selected = self:ResolveBreakdownSelection() or entry
+
     self:LayoutBreakdownSections()
     self:PopulateSidebar()
     self:PopulateSegments()
-    self:PopulateSpells(entry)
-    self:PopulateTargets(entry)
+    self:PopulateSpells(selected)
+    self:PopulateTargets(selected)
     frame:Show()
 end
 
