@@ -8,6 +8,41 @@ history as its release notes. Older sections move here instead of being
 deleted: many carry root-cause writeups worth grepping before assuming a bug
 is fresh. This file is in the .pkgmeta ignore list, so it never ships.
 
+V1.23
+
+Fixed:
+
+- In the breakdown window, clicking a player could select a different one, and
+  several rows could look selected at once.
+
+  The window remembered your selection by the player's unique ID. The game
+  hides those IDs in a lot of content -- everything in a key, for one -- and
+  every hidden one arrives looking identical, so the window could not tell the
+  rows apart: it highlighted all of them and, on a refresh, re-selected
+  whichever came first rather than the one you picked.
+
+  It now remembers the row itself, and uses the player's ID only when the game
+  actually lets it read one. Where it can, your selection still follows that
+  player as the order changes; where it cannot, the row you clicked stays the
+  row that is selected.
+
+  The per-spell breakdown for a player the game is hiding still comes back
+  empty, because asking for it needs the ID we were not given. That is
+  unchanged, and there is nothing the addon can do about it.
+
+Added:
+
+- "/rl" as a shortcut for reloading your interface. Only claimed if no other
+  addon already provides it, so an existing one keeps working.
+
+Changed:
+
+- Declares support for patch 12.1.5 alongside 12.1.0, so it loads on the
+  12.1.5 test client without being marked out of date. Patch 12.1.5 makes
+  those player IDs hidden more often than 12.1.0 does, which is what prompted
+  the fix above -- but the fix applies on both.
+
+
 V1.22
 
 Fixed:
