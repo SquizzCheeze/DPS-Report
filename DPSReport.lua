@@ -425,8 +425,9 @@ end
 -- "deaths stopped updating mid-run" looked like.
 function DeathTracker:CoversOverallByDuration()
     if not self.armed.overall or not self.startedAt.overall then return false end
-    local ok, dur = pcall(C_DamageMeter.GetSessionDurationSeconds,
-        Enum.DamageMeterSessionType.Overall)
+    -- Unit-corrected: a raw millisecond reading made this fail every time,
+    -- silently dropping our death tally for the API's (Feign Death included).
+    local ok, dur = pcall(DPSMeter.OverallDurationSeconds, DPSMeter)
     if not ok or not dur or issecretvalue(dur) or type(dur) ~= "number" then
         return false
     end
@@ -4478,6 +4479,9 @@ DPSMeter.metersLoaded = false
 -- clear button throws them away, where the user asked for exactly that.
 function DPSMeter:ResetAll(keepSegments)
     C_DamageMeter.ResetAllCombatSessions()
+    -- Wall-clock start of the new Overall session: the upper bound
+    -- OverallDurationSeconds sanity-checks the API's duration against.
+    self.overallResetAt = GetTime()
     -- Our own death tally is scoped to the Overall session, so it has to be
     -- cleared with it or a fresh key inherits the last one's deaths.
     DeathTracker:Reset("overall")
@@ -4769,8 +4773,7 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
     if runTimeMs and runTimeMs > 0 then
         duration = math.floor(runTimeMs / 1000)
     else
-        local d = C_DamageMeter.GetSessionDurationSeconds(Enum.DamageMeterSessionType.Overall)
-        duration = d or 0
+        duration = DPSMeter:OverallDurationSeconds() or 0
     end
 
     -- Build a GUID→name lookup from the completion members list (plain strings,
@@ -4942,6 +4945,41 @@ SnapshotSegment = function()
     end
 end
 
+-- The Overall session's duration, corrected for a Blizzard unit bug.
+--
+-- GetSessionDurationSeconds(Overall) has been seen returning MILLISECONDS: a
+-- 26:52 key showed "26871:01" on the timer (1,612,261 = 1612 s x 1000), while
+-- DPS stayed correct because the engine computes amountPerSecond itself. The
+-- value is plain out of combat, so it can be tested against two bounds that
+-- combat time can never exceed, and scaled back when it clearly does:
+--   * wall clock since our own reset (set in ResetAll, i.e. every key start)
+--   * the sum of the individual fights the API still lists
+-- The factor is 1000 either way, so the margins below are deliberately loose.
+-- A secret value cannot be compared and is passed through untouched.
+function DPSMeter:OverallDurationSeconds()
+    local ok, dur = pcall(C_DamageMeter.GetSessionDurationSeconds,
+        Enum.DamageMeterSessionType.Overall)
+    if not ok or not dur then return 0 end
+    if issecretvalue(dur) or type(dur) ~= "number" then return dur end
+    if dur <= 0 then return dur end
+
+    if self.overallResetAt then
+        local wall = GetTime() - self.overallResetAt
+        if wall >= 0 and dur > wall + 10 then return dur / 1000 end
+        return dur
+    end
+
+    local sum = 0
+    for _, s in ipairs(GetAvailableAPISessions()) do
+        local d = s.durationSeconds
+        if d and not issecretvalue(d) and type(d) == "number" and d > 0 then
+            sum = sum + d
+        end
+    end
+    if sum > 0 and dur > sum * 20 then return dur / 1000 end
+    return dur
+end
+
 -- Compute combat duration; session-aware:
 --   "current"   = current/last fight via GetSessionDurationSeconds
 --   "overall"   = overall session via GetSessionDurationSeconds
@@ -4959,7 +4997,7 @@ function MeterProto:GetCombatDuration()
         return (s and s.durationSeconds) or 0
     end
     if self.session == "overall" then
-        return C_DamageMeter.GetSessionDurationSeconds(Enum.DamageMeterSessionType.Overall) or 0
+        return DPSMeter:OverallDurationSeconds()
     else -- "current"
         return C_DamageMeter.GetSessionDurationSeconds(Enum.DamageMeterSessionType.Current) or 0
     end
