@@ -900,6 +900,15 @@ local function LaunderNumber(secretNum)
     return 0
 end
 
+-- Correct an Overall-session per-second value for the engine's millisecond
+-- duration bug (see DPSMeter:OverallMsScale). A secret cannot be multiplied, so
+-- it passes through unchanged; values are plain once combat drops, which is
+-- when the meter is read and every report is built.
+local function FixOverallRate(v)
+    if v == nil or issecretvalue(v) or type(v) ~= "number" then return v end
+    return v * DPSMeter:OverallMsScale()
+end
+
 -- Format a tainted number with K/M suffixes (Details!-style).
 local function FormatSecret(secretNum)
     return FormatNumber(LaunderNumber(secretNum))
@@ -1227,7 +1236,11 @@ local function BuildReport(meterType, sessionType, topCount)
         local src = sources[i]
         local value
         if isPerSecond then
-            value = FormatSecret(src.amountPerSecond)
+            local aps = src.amountPerSecond
+            if sessionType == Enum.DamageMeterSessionType.Overall then
+                aps = FixOverallRate(aps)
+            end
+            value = FormatSecret(aps)
         else
             value = FormatSecret(src.totalAmount)
         end
@@ -4826,16 +4839,16 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
                             name            = (spellInfo and spellInfo.name) or sp.name or "",
                             iconID          = (spellInfo and spellInfo.iconID) or sp.iconID or 136243,
                             totalAmount     = LaunderNumber(sp.totalAmount),
-                            amountPerSecond = LaunderNumber(sp.amountPerSecond),
+                            amountPerSecond = FixOverallRate(LaunderNumber(sp.amountPerSecond)),
                         })
                     end
                 end
                 table.insert(entries, {
                     name            = shortN,
                     class           = src.classFilename,
-                    displayValue    = isPerSecond and LaunderNumber(src.amountPerSecond) or LaunderNumber(src.totalAmount),
+                    displayValue    = isPerSecond and FixOverallRate(LaunderNumber(src.amountPerSecond)) or LaunderNumber(src.totalAmount),
                     totalAmount     = LaunderNumber(src.totalAmount),
-                    amountPerSecond = LaunderNumber(src.amountPerSecond),
+                    amountPerSecond = FixOverallRate(LaunderNumber(src.amountPerSecond)),
                     isPlayer        = src.isLocalPlayer,
                     sourceGUID      = guid,
                     specIconID      = src.specIconID,
@@ -4948,36 +4961,57 @@ end
 -- The Overall session's duration, corrected for a Blizzard unit bug.
 --
 -- GetSessionDurationSeconds(Overall) has been seen returning MILLISECONDS: a
--- 26:52 key showed "26871:01" on the timer (1,612,261 = 1612 s x 1000), while
--- DPS stayed correct because the engine computes amountPerSecond itself. The
+-- 26:52 key showed "26871:01" on the timer (1,612,261 = 1612 s x 1000). The
 -- value is plain out of combat, so it can be tested against two bounds that
 -- combat time can never exceed, and scaled back when it clearly does:
 --   * wall clock since our own reset (set in ResetAll, i.e. every key start)
 --   * the sum of the individual fights the API still lists
 -- The factor is 1000 either way, so the margins below are deliberately loose.
 -- A secret value cannot be compared and is passed through untouched.
+--
+-- The engine divides by that same broken duration, so every Overall
+-- amountPerSecond comes back 1000x too LOW as well (367M over 26:52 showed as
+-- "227" DPS). OverallMsScale exposes the factor; FixOverallRate applies it.
 function DPSMeter:OverallDurationSeconds()
     local ok, dur = pcall(C_DamageMeter.GetSessionDurationSeconds,
         Enum.DamageMeterSessionType.Overall)
     if not ok or not dur then return 0 end
     if issecretvalue(dur) or type(dur) ~= "number" then return dur end
-    if dur <= 0 then return dur end
+    return dur / self:OverallMsScale(dur)
+end
 
-    if self.overallResetAt then
-        local wall = GetTime() - self.overallResetAt
-        if wall >= 0 and dur > wall + 10 then return dur / 1000 end
-        return dur
+-- 1000 when the Overall session is reporting milliseconds, else 1. Cached for
+-- a second: the rate fix calls this once per row, and the fallback bound walks
+-- every stored fight.
+function DPSMeter:OverallMsScale(dur)
+    local now = GetTime()
+    if self._msScaleAt and now - self._msScaleAt < 1 then return self._msScale end
+    if dur == nil then
+        local ok, d = pcall(C_DamageMeter.GetSessionDurationSeconds,
+            Enum.DamageMeterSessionType.Overall)
+        dur = ok and d or nil
     end
+    -- Unreadable (secret mid-combat): don't cache a guess, just don't scale.
+    if dur == nil or issecretvalue(dur) or type(dur) ~= "number" then return 1 end
 
-    local sum = 0
-    for _, s in ipairs(GetAvailableAPISessions()) do
-        local d = s.durationSeconds
-        if d and not issecretvalue(d) and type(d) == "number" and d > 0 then
-            sum = sum + d
+    local scale = 1
+    if dur > 0 then
+        if self.overallResetAt then
+            local wall = now - self.overallResetAt
+            if wall >= 0 and dur > wall + 10 then scale = 1000 end
+        else
+            local sum = 0
+            for _, s in ipairs(GetAvailableAPISessions()) do
+                local d = s.durationSeconds
+                if d and not issecretvalue(d) and type(d) == "number" and d > 0 then
+                    sum = sum + d
+                end
+            end
+            if sum > 0 and dur > sum * 20 then scale = 1000 end
         end
     end
-    if sum > 0 and dur > sum * 20 then return dur / 1000 end
-    return dur
+    self._msScale, self._msScaleAt = scale, now
+    return scale
 end
 
 -- Compute combat duration; session-aware:
@@ -5056,10 +5090,13 @@ function MeterProto:LoadFromAPI()
 
     -- Sources arrive pre-sorted from the API – do NOT table.sort.
     local isPerSecond = (self.mode == "dps" or self.mode == "hps")
+    local isOverall = self.session == "overall"
     local count = math.min(self.MAX_BARS, #sources)
     for i = 1, count do
         local src = sources[i]
-        local displayValue = isPerSecond and src.amountPerSecond or src.totalAmount
+        local aps = src.amountPerSecond
+        if isOverall then aps = FixOverallRate(aps) end
+        local displayValue = isPerSecond and aps or src.totalAmount
 
         -- plainName: plain string used for chat reports, saving, and nickname lookup.
         -- During combat this relies on GUID/spec/class roster caches.
@@ -5077,7 +5114,7 @@ function MeterProto:LoadFromAPI()
             class        = src.classFilename,
             displayValue = displayValue,
             totalAmount  = src.totalAmount,
-            amountPerSecond = src.amountPerSecond,
+            amountPerSecond = aps,
             isPlayer     = src.isLocalPlayer,
             sourceGUID   = src.sourceGUID ~= nil and SafeStr(src.sourceGUID) or nil,
             specIconID   = src.specIconID,
@@ -6438,7 +6475,9 @@ function MeterProto:ShowBarTooltip(bar)
 
             -- DPS
             if isPerSecond then
-                row.dpsText:SetFormattedText("%s", AbbreviateNumbers(spell.amountPerSecond, ABBREVIATE_OPTS_PS))
+                local aps = spell.amountPerSecond
+                if self.session == "overall" then aps = FixOverallRate(aps) end
+                row.dpsText:SetFormattedText("%s", AbbreviateNumbers(aps, ABBREVIATE_OPTS_PS))
             else
                 row.dpsText:SetText("")
             end
@@ -7032,14 +7071,16 @@ function MeterProto:LoadBreakdownEntries()
     for i = 1, count do
         local src = sources[i]
         local plainName = ResolveSourcePlainName(src)
+        local aps = src.amountPerSecond
+        if session == "overall" then aps = FixOverallRate(aps) end
         table.insert(frame.bdEntries, {
             name            = plainName or src.name,
             plainName       = plainName,
             apiName         = src.name,
             class           = src.classFilename,
-            displayValue = isPerSecond and src.amountPerSecond or src.totalAmount,
+            displayValue = isPerSecond and aps or src.totalAmount,
             totalAmount  = src.totalAmount,
-            amountPerSecond = src.amountPerSecond,
+            amountPerSecond = aps,
             isPlayer     = src.isLocalPlayer,
             sourceGUID   = src.sourceGUID ~= nil and SafeStr(src.sourceGUID) or nil,
             specIconID   = src.specIconID,
@@ -7237,7 +7278,9 @@ function MeterProto:PopulateSpells(entry)
         row.amtText:SetFormattedText("%s", AbbreviateNumbers(spell.totalAmount, ABBREVIATE_OPTS_TOTAL))
 
         if isPerSecond then
-            row.dpsText:SetFormattedText("%s", AbbreviateNumbers(spell.amountPerSecond, ABBREVIATE_OPTS_PS))
+            local aps = spell.amountPerSecond
+            if bdSession == "overall" then aps = FixOverallRate(aps) end
+            row.dpsText:SetFormattedText("%s", AbbreviateNumbers(aps, ABBREVIATE_OPTS_PS))
         else
             row.dpsText:SetText("")
         end
