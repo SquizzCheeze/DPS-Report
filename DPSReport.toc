@@ -5,7 +5,7 @@
 ## X-License: MIT
 ## X-Curse-Project-ID: 1504877
 ## X-Flavor: Mainline
-## Version: 1.24
+## Version: 1.25
 ## SavedVariables: DPSReportDB
 ## SavedVariablesPerCharacter: DPSReportCharDB
 ## IconTexture: Interface\AddOns\DPSReport\Textures\dpsreportingameicon
