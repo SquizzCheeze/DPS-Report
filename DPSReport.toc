@@ -7,6 +7,7 @@
 ## X-Flavor: Mainline
 ## Version: 1.24
 ## SavedVariables: DPSReportDB
+## SavedVariablesPerCharacter: DPSReportCharDB
 ## IconTexture: Interface\AddOns\DPSReport\Textures\dpsreportingameicon
 ## AddonCompartmentFunc: DPSReport_OnAddonCompartmentClick
 ## AddonCompartmentFuncOnEnter: DPSReport_OnAddonCompartmentEnter

@@ -8,6 +8,28 @@ history as its release notes. Older sections move here instead of being
 deleted: many carry root-cause writeups worth grepping before assuming a bug
 is fresh. This file is in the .pkgmeta ignore list, so it never ships.
 
+V1.24
+
+Fixed:
+
+- At the end of a Mythic+ run the Overall meter showed nonsense: a timer like
+  "26871:01" for a 26-minute key, and DPS around a thousand times too low --
+  "227" next to 367 million damage, where it should have read 227K. Damage
+  totals were always right, and Overall read correctly during the run.
+
+  Once the key completes, the game reports the Overall session's length in
+  milliseconds instead of seconds, and works out each player's per-second
+  numbers from that same wrong length. DPS Report now spots when the reported
+  length is impossible -- longer than the time since you reset, or far longer
+  than all the fights it contains -- and scales it back. That corrects the
+  timer, and DPS and HPS for the meter, its reports, the breakdown window and
+  the run saved at the end of the key.
+
+  The same wrong length also made the death count on Overall fall back to the
+  game's own list, which counts Feign Death as a death. It uses DPS Report's
+  own count again.
+
+
 V1.23
 
 Fixed:

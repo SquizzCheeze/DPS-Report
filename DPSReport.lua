@@ -1041,6 +1041,7 @@ local function ResolveSourcePlainName(src)
             seenNameCache[guid] = full
             if DPSReportDB and DPSReportDB.seenNames then
                 DPSReportDB.seenNames[guid] = full
+                if DPSReportDB.seenNamesAt then DPSReportDB.seenNamesAt[guid] = time() end
             end
         end
         return full
@@ -2048,14 +2049,46 @@ f:SetScript("OnEvent", function(self, event, ...)
             local base = charKey:match("^[^-]+")
             if base then nicknameCache[base] = DPSReportDB.nicknames[charKey] end
         end
-        -- Restore persistent seen-name cache (GUID-keyed; skip legacy integer specIconID keys)
+        -- Restore persistent seen-name cache (GUID-keyed).
+        --
+        -- It used to grow forever: every player whose name was ever read went
+        -- in and nothing came out, and the whole table was then COPIED into
+        -- seenNameCache, so it cost twice. Now:
+        --   * entries not seen for SEEN_NAME_TTL are dropped at login. The
+        --     stamps live beside it in seenNamesAt; an entry with no stamp yet
+        --     (everything saved before this change) is stamped now, so nothing
+        --     vanishes on the first load -- it expires only if unseen from here.
+        --   * legacy integer specIconID keys, which the old copy loop skipped,
+        --     are removed outright.
+        --   * seenNameCache IS the saved table rather than a copy. Every
+        --     closure in this file captures the variable, so reassigning it
+        --     here repoints them all; the two write sites that set both now
+        --     set the same table twice, which is harmless.
         if DPSReportDB.seenNames then
-            for k, v in pairs(DPSReportDB.seenNames) do
-                if type(k) == "string" then
-                    seenNameCache[k] = v
+            local SEEN_NAME_TTL = 30 * 24 * 3600
+            local stamps = DPSReportDB.seenNamesAt or {}
+            DPSReportDB.seenNamesAt = stamps
+            local now = time()
+            for k in pairs(DPSReportDB.seenNames) do
+                if type(k) ~= "string" then
+                    DPSReportDB.seenNames[k] = nil
+                elseif not stamps[k] then
+                    stamps[k] = now
+                elseif now - stamps[k] > SEEN_NAME_TTL then
+                    DPSReportDB.seenNames[k] = nil
+                    stamps[k] = nil
                 end
             end
+            for k in pairs(stamps) do
+                if DPSReportDB.seenNames[k] == nil then stamps[k] = nil end
+            end
+            for k, v in pairs(seenNameCache) do
+                if DPSReportDB.seenNames[k] == nil then DPSReportDB.seenNames[k] = v end
+            end
+            seenNameCache = DPSReportDB.seenNames
         end
+        -- mythicRuns: written by an old version, read by nothing in this one.
+        DPSReportDB.mythicRuns = nil
         print("|cff00ccff[DPSReport]|r Loaded. Type /dps to open settings.")
         C_Timer.After(2, function()
             DPSMeter:LoadAllMeters()
@@ -4943,6 +4976,12 @@ SnapshotSegment = function()
                     seenNameCache[guid] = shortN
                     if DPSReportDB and DPSReportDB.seenNames then
                         DPSReportDB.seenNames[guid] = shortN
+                        -- Last-seen stamp for the 30-day expiry at login. This
+                        -- pass rewrites everyone in the current fight, so
+                        -- regulars stay fresh without a stamp on every read.
+                        if DPSReportDB.seenNamesAt then
+                            DPSReportDB.seenNamesAt[guid] = time()
+                        end
                     end
                 end
             end
@@ -7726,7 +7765,14 @@ function DPSMeter:SaveAllMeters()
     if not DPSReportDB.charData[charKey] then DPSReportDB.charData[charKey] = {} end
     local cd = DPSReportDB.charData[charKey]
     cd.meters = saved
-    cd.segments = self.segments
+    -- See LoadAllMeters: per-character once that saved variable is registered.
+    if self.segmentsPerChar then
+        DPSReportCharDB = DPSReportCharDB or {}
+        DPSReportCharDB.segments = self.segments
+        cd.segments = nil
+    else
+        cd.segments = self.segments
+    end
 end
 
 function DPSMeter:LoadAllMeters()
@@ -7734,8 +7780,43 @@ function DPSMeter:LoadAllMeters()
     -- the LoadFromAPI calls below, both save, and they must be allowed through.
     self.metersLoaded = true
     local charData = DPSReportDB and DPSReportDB.charData and DPSReportDB.charData[charKey]
-    -- Restore M+ stored segments
-    if charData and charData.segments then
+    -- Restore M+ stored segments.
+    --
+    -- They live in the PER-CHARACTER saved variable now. In the account-wide
+    -- one, every character loaded every other character's ten runs -- per-spell
+    -- breakdowns and all -- at every login, which was most of a 2.6 MB file.
+    -- Each character's history moves across on its first login after this.
+    --
+    -- The move only happens once the client has REGISTERED DPSReportCharDB. A
+    -- new SavedVariablesPerCharacter line is read at client start, not on
+    -- /reload; until a restart, DPSReportCharDB is an ordinary global that is
+    -- never written to disk, and moving the runs into it would lose them at
+    -- logout. The TOC metadata says whether it is registered. Until it is, the
+    -- account-wide copy carries on exactly as before.
+    --
+    -- Two ways to know, either sufficient: the TOC metadata names it, or a
+    -- marker written last session came back from disk (proof it round-trips,
+    -- and the fallback if the metadata call does not answer for this field).
+    local perChar = C_AddOns and C_AddOns.GetAddOnMetadata
+        and C_AddOns.GetAddOnMetadata("DPSReport", "SavedVariablesPerCharacter")
+    local roundTripped = type(DPSReportCharDB) == "table" and DPSReportCharDB.saved == true
+    self.segmentsPerChar = roundTripped
+        or (type(perChar) == "string" and perChar:find("DPSReportCharDB", 1, true) ~= nil)
+    -- Harmless when unregistered: an unsaved global that simply disappears.
+    DPSReportCharDB = type(DPSReportCharDB) == "table" and DPSReportCharDB or {}
+    DPSReportCharDB.saved = true
+    if self.segmentsPerChar then
+        DPSReportCharDB = DPSReportCharDB or {}
+        if charData and charData.segments then
+            if not DPSReportCharDB.segments then
+                DPSReportCharDB.segments = charData.segments
+            end
+            charData.segments = nil
+        end
+        if DPSReportCharDB.segments then
+            self.segments = DPSReportCharDB.segments
+        end
+    elseif charData and charData.segments then
         self.segments = charData.segments
     end
     local saved = charData and charData.meters
