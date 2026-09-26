@@ -90,6 +90,25 @@ Blizzard's `UIPanelScrollFrameTemplate` scrollbar isn't part of `DR_COLORS`; `Sk
 
 `DPSReportDB` (SavedVariables) holds: `profiles` (account-wide, keyed by profile name, each holding a full settings table cloned from `DEFAULT_SETTINGS`), `charData` (per-character active profile pointer, keyed by `charKey` = "Name-Realm"), `nicknames` (account-wide), and `seenNames` (account-wide GUID → name cache). `LoadSettings()` also handles one-time migrations (legacy account-wide `activeProfile` → per-character, legacy `settings` → `profiles.Default`, `"raid"` channel → `"instance"`, and `autoReportType` from `TYPE_MAP` spellings to the `METER_MODE_MAP` ones the segment is keyed by).
 
+**Since V1.25 (2026-09-26):**
+
+- **Saved M+ segments are PER CHARACTER**, in `DPSReportCharDB.segments`
+  (`## SavedVariablesPerCharacter: DPSReportCharDB`). In `charData[charKey].segments` every
+  character loaded every other character's ten runs, per-spell breakdowns included — most of a
+  2.6 MB file. Each character's runs move across on its first login after the update
+  (`LoadAllMeters`). ⚠ **The move only happens once the client is proven to save that
+  variable** (`DPSMeter.segmentsPerChar`): a new `SavedVariablesPerCharacter` line is read at
+  client start, not on `/reload`, and until a restart `DPSReportCharDB` is an unsaved global —
+  moving runs into it then would lose them at logout. Proof is either the TOC metadata naming it
+  or a `DPSReportCharDB.saved` marker that survived a round trip to disk. `SaveAllMeters` writes to
+  whichever store `segmentsPerChar` chose.
+- **`seenNames` expires**: entries unseen for 30 days are dropped at login. Last-seen stamps live
+  in `DPSReportDB.seenNamesAt`; the out-of-combat source pass (~L4945) re-stamps everyone in the
+  current fight, so regulars never age out. Legacy integer keys are removed there too.
+  `seenNameCache` now IS `DPSReportDB.seenNames` (the local is reassigned at load; every closure
+  captures the variable) instead of a full copy of it.
+- `mythicRuns` was written by an old version and read by nothing; it is deleted at load.
+
 Note the shallow fill loop in `LoadSettings` (`if prof[k] == nil then prof[k] = v end`) copies by reference, so a nested table in `DEFAULT_SETTINGS` would be shared across every profile. That is why the summary line toggles are flat `autoSummary*` booleans rather than one table.
 
 Meter window layout (position, size, mode, session, snap relationships) is stored per-profile in `settings.meterLayout` and reapplied via `ApplyMeterLayoutFromSettings`, separate from `DPSMeter:SaveAllMeters()/LoadAllMeters()` which persists the meter list itself.
