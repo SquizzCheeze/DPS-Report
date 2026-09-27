@@ -6,14 +6,22 @@ built-in `C_DamageMeter` API — no combat log parsing, no heavy CPU cost.
 Report DPS/HPS and other stats straight to chat, or keep live meter windows on
 screen with per-spell and per-target breakdowns.
 
+**[Download on CurseForge](https://www.curseforge.com/projects/1504877)**
+
 ## Features
 
-- **Live meter windows** — resizable, movable, snap-to-align meters with DPS,
-  HPS, damage, and healing modes.
+- **Live meter windows** — as many as you like, each with its own metric: DPS,
+  HPS, damage, healing, absorbs, interrupts, dispels, damage taken, avoidable
+  damage or deaths. Resizable, movable, and they snap together when dragged.
 - **Breakdown drill-down** — click a bar to see per-spell and per-target detail.
-- **Chat reports** — post the current fight or the overall session to your
-  group, `/say`, or a whisper.
-- **Auto-report on combat end** — optional, configurable per profile.
+- **End-of-key summary** — finish a Mythic+ key and announce a run summary with
+  a role-weighted **MVP**, top DPS / HPS / interrupts / dispels, least avoidable
+  damage and deaths. "Explain Last Run MVP" shows how the score was worked out.
+- **Chat reports** — post any meter, the whole session or a saved segment to
+  your group, `/say`, or a whisper.
+- **Saved runs** — your recent Mythic+ runs are kept per character, with
+  breakdowns, to look back on or report later.
+- **Real names in combat** — shows player names even when the game hides them.
 - **Profiles** — account-wide settings profiles with a per-character active
   profile pointer.
 - **Nicknames** — set friendly names for group members; shared automatically
@@ -139,6 +147,20 @@ number can't be reused.
 
 Requires a `CF_API_KEY` (or `CF_API_TOKEN`) repository secret, from
 <https://authors.curseforge.com/#/settings/api-tokens>.
+
+## Support
+
+If you enjoy using DPS Report, consider supporting development on
+[Ko-fi](https://ko-fi.com/squizz) ❤️
+
+## More addons by Squizz
+
+- **[SquizzFrames](https://www.curseforge.com/projects/1649203)** — party, raid, pet and unit frames with a full indicator system, click-casting and a tank tracker
+- **[Squizzumables](https://www.curseforge.com/projects/1483099)** — one-click reminders for food, flasks, oils and class buffs, plus raid tools and a restyled Cooldown Manager
+- **[Squizzcap](https://www.curseforge.com/projects/1713974)** — what killed you, how hard it hit and how fast you went down, with every death of a key saved to look back on
+- **[SquizzTalents](https://www.curseforge.com/projects/1705647)** — all your talent builds in one list, with a reminder when your build doesn't match the content
+- **[Avatar Continued](https://www.curseforge.com/projects/1533608)** — your character model on screen as part of your UI
+- **[KSLBestDungeon](https://www.curseforge.com/projects/1599575)** — ranks Mythic+ dungeons by how many of your KeystoneLoot favorites drop there
 
 ## Licence
 
