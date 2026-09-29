@@ -17,5 +17,5 @@ New:
   run of the same dungeon, for example "vs your last Pit of Saron +7,
   2026-09-12: DPS 1.2M (+8%), deaths 1 (was 3)". Healers get their HPS
   too. It is only for you, never sent to the group, and appears only when
-  there is an earlier run of that dungeon to compare with. Turn it off
-  under Mythic+ in the settings.
+  there is an earlier run of that dungeon to compare with. Off by default;
+  turn it on under Mythic+ in the settings.

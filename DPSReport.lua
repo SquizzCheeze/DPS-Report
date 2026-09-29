@@ -563,7 +563,7 @@ local DEFAULT_SETTINGS = {
     autoReportChannel = "party",
     resetOnMythicStart = false,
     saveRaidPulls = true,   -- store each raid boss pull (kill or wipe) as a segment
-    compareLastRun = true,  -- after a key, print your numbers vs your last run of that dungeon
+    compareLastRun = false, -- after a key, print your numbers vs your last run of that dungeon
 
     -- "summary" = the highlight reel below; "single" = one metric, whole group
     -- ranked highest to lowest. autoReportType only applies to "single", and
@@ -2247,7 +2247,7 @@ f:SetScript("OnEvent", function(self, event, ...)
                 -- Your own chat only: how this run compares with your last
                 -- one of the same dungeon. Needs readable values, like the
                 -- announce below.
-                if readable and settings and settings.compareLastRun ~= false then
+                if readable and settings and settings.compareLastRun == true then
                     DPSMeter:PrintRunComparison(#DPSMeter.segments)
                 end
                 if not readable then
@@ -2814,7 +2814,7 @@ local function RefreshOptionsPanel()
     if panelWidgets.resetMythicCB then
         panelWidgets.resetMythicCB:SetChecked(settings.resetOnMythicStart or false)
         if panelWidgets.raidPullsCB then panelWidgets.raidPullsCB:SetChecked(settings.saveRaidPulls ~= false) end
-        if panelWidgets.compareCB then panelWidgets.compareCB:SetChecked(settings.compareLastRun ~= false) end
+        if panelWidgets.compareCB then panelWidgets.compareCB:SetChecked(settings.compareLastRun == true) end
     end
     if panelWidgets.shortNamesCB then
         panelWidgets.shortNamesCB:SetChecked(settings.shortNames ~= false)
