@@ -21,6 +21,11 @@ screen with per-spell and per-target breakdowns.
   your group, `/say`, or a whisper.
 - **Saved runs** — your recent Mythic+ runs are kept per character, with
   breakdowns, to look back on or report later.
+- **Saved raid pulls** — every kill and wipe on a raid boss is kept too
+  ("Boss (Heroic) - Wipe #3"), the last 20 separately from your keys, so you
+  can compare attempts: who did what on pull 7 against pull 12.
+- **Compare with your last run** (optional) — after a key, a line in your own
+  chat compares your DPS, HPS and deaths with your last run of that dungeon.
 - **Real names in combat** — shows player names even when the game hides them.
 - **Profiles** — account-wide settings profiles with a per-character active
   profile pointer.
