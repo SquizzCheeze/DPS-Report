@@ -1,20 +1,14 @@
 DPS Report Changelog
 ====================
 
-V1.25
+V1.26
 
-Changed:
+New:
 
-- Each character now keeps its saved Mythic+ runs to itself. They used to be
-  stored for the whole account, so every character loaded every other
-  character's last ten runs, with their per-spell breakdowns, each time you
-  logged in. Nothing is lost: each character's runs move over the first time
-  it logs in after the update. This needs a full game restart, not just a
-  /reload, before it takes effect.
-
-- The list of player names DPS Report remembers (so it can show real names
-  when the game hides them in combat) no longer grows forever. A name not
-  seen for 30 days is forgotten, and anyone you still play with stays. The
-  list also no longer takes up memory twice.
-
-- Removed a block of old saved data that nothing in the addon uses any more.
+- Raid boss pulls are saved. Every kill and wipe on a raid boss is stored
+  like a Mythic+ run, named "Boss (Heroic) - Wipe #3", so you can pick any
+  pull from a meter's session list afterwards and compare attempts: who did
+  what on pull 7 against pull 12. The last 20 pulls are kept, separately
+  from your ten saved keys so a raid night never pushes those out, and
+  "Last Run" features still mean your last key. Turn it off under Mythic+
+  in the settings.

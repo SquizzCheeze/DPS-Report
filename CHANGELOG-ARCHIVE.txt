@@ -8,6 +8,24 @@ history as its release notes. Older sections move here instead of being
 deleted: many carry root-cause writeups worth grepping before assuming a bug
 is fresh. This file is in the .pkgmeta ignore list, so it never ships.
 
+V1.25
+
+Changed:
+
+- Each character now keeps its saved Mythic+ runs to itself. They used to be
+  stored for the whole account, so every character loaded every other
+  character's last ten runs, with their per-spell breakdowns, each time you
+  logged in. Nothing is lost: each character's runs move over the first time
+  it logs in after the update. This needs a full game restart, not just a
+  /reload, before it takes effect.
+
+- The list of player names DPS Report remembers (so it can show real names
+  when the game hides them in combat) no longer grows forever. A name not
+  seen for 30 days is forgotten, and anyone you still play with stays. The
+  list also no longer takes up memory twice.
+
+- Removed a block of old saved data that nothing in the addon uses any more.
+
 V1.24
 
 Fixed:

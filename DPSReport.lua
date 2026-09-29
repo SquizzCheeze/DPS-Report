@@ -562,6 +562,7 @@ local DEFAULT_SETTINGS = {
     autoReportDelay = 2,
     autoReportChannel = "party",
     resetOnMythicStart = false,
+    saveRaidPulls = true,   -- store each raid boss pull (kill or wipe) as a segment
 
     -- "summary" = the highlight reel below; "single" = one metric, whole group
     -- ranked highest to lowest. autoReportType only applies to "single", and
@@ -1738,11 +1739,16 @@ local function BuildMythicAnnounce(segIndex)
     return BuildMythicSummaryReport(segIndex)
 end
 
--- Most recent stored segment, or nil if nothing has been recorded yet.
+-- Most recent stored Mythic+ run, or nil if none has been recorded yet.
+-- Raid pulls (seg.kind == "raid") are skipped: "Last Run" means the last KEY,
+-- and its MVP maths and announce are built for one.
 local function LatestSegmentIndex()
     local segs = DPSMeter and DPSMeter.segments
-    if not segs or #segs == 0 then return nil end
-    return #segs
+    if not segs then return nil end
+    for i = #segs, 1, -1 do
+        if segs[i].kind ~= "raid" then return i end
+    end
+    return nil
 end
 
 -- Print the MVP score with its working, for the most recent run, to your own
@@ -1947,6 +1953,7 @@ local MAIN_EVENTS = {
     "CHAT_MSG_ADDON", "GROUP_JOINED", "GROUP_ROSTER_UPDATE",
     "INSPECT_READY", "UNIT_IN_RANGE_UPDATE",
     "CHALLENGE_MODE_START", "CHALLENGE_MODE_COMPLETED",
+    "ENCOUNTER_END",
 }
 local activeRunInfo = { mapID = nil, level = nil, name = nil }
 local function RegisterMainEvents()
@@ -2169,6 +2176,10 @@ f:SetScript("OnEvent", function(self, event, ...)
         -- Reset all meters (including overallTime) when a new key starts
         if settings and settings.resetOnMythicStart then
             DPSMeter:ResetAll(true)  -- keep segments: the last run is still worth reading
+        end
+    elseif event == "ENCOUNTER_END" then
+        if settings and settings.saveRaidPulls ~= false then
+            DPSMeter:SnapshotRaidPull(...)
         end
     elseif event == "CHALLENGE_MODE_COMPLETED" then
         do
@@ -2795,6 +2806,7 @@ local function RefreshOptionsPanel()
     end
     if panelWidgets.resetMythicCB then
         panelWidgets.resetMythicCB:SetChecked(settings.resetOnMythicStart or false)
+        if panelWidgets.raidPullsCB then panelWidgets.raidPullsCB:SetChecked(settings.saveRaidPulls ~= false) end
     end
     if panelWidgets.shortNamesCB then
         panelWidgets.shortNamesCB:SetChecked(settings.shortNames ~= false)
@@ -3221,6 +3233,15 @@ function DPSReport_OpenOptionsPanel()
     end)
     resetMythicCB:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
     panelWidgets.resetMythicCB = resetMythicCB
+    yOffset = yOffset - 24
+
+    -- Raid pulls live beside the saved keys in every session dropdown, so
+    -- their switch sits with the other saved-run option.
+    local raidPullsCB = CreateDRCheckbox(content, "Save each raid boss pull (last 20)", function(checked)
+        settings.saveRaidPulls = checked
+    end)
+    raidPullsCB:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    panelWidgets.raidPullsCB = raidPullsCB
     yOffset = yOffset - 24
 
     -- === REAL-TIME METER ===
@@ -4562,28 +4583,56 @@ end
 -- limit, because a completed key snapshots at roughly 64KB -- unbounded, that is
 -- half a megabyte of saved variables a week for anyone running keys daily.
 local MAX_SEGMENTS = 10
+-- Raid boss pulls (seg.kind == "raid") are capped separately: a raid night is
+-- easily 15+ pulls, which would otherwise push every stored key out of the
+-- ten. A pull stores one boss fight, far smaller than a whole key.
+DPSMeter.MAX_RAID_PULLS = 20
 
--- Drop the oldest runs down to MAX_SEGMENTS.
+-- Drop the oldest of each kind down to its cap: MAX_SEGMENTS Mythic+ runs,
+-- MAX_RAID_PULLS raid pulls.
 --
 -- Meters and the report widget address segments by INDEX ("seg:3"), so removing
--- from the front shifts every later run down one and the references have to move
--- with them -- otherwise a meter silently starts showing a different dungeon.
--- Anything pointing at a run that just fell off the end goes back to live data.
+-- one shifts every later segment down and the references have to move with
+-- them -- otherwise a meter silently starts showing a different dungeon. With
+-- two kinds a removal can be from the MIDDLE (an old pull between two keys),
+-- so references move through an old-to-new index map rather than one fixed
+-- shift. Anything pointing at a removed segment goes back to live data.
 function DPSMeter:PruneSegments()
-    local excess = #self.segments - MAX_SEGMENTS
-    if excess <= 0 then return end
-    for _ = 1, excess do
-        table.remove(self.segments, 1)
+    local caps = { mplus = MAX_SEGMENTS, raid = self.MAX_RAID_PULLS }
+    local over = {}
+    for _, seg in ipairs(self.segments) do
+        local kind = seg.kind or "mplus"
+        over[kind] = (over[kind] or 0) + 1
     end
+    local any = false
+    for kind, n in pairs(over) do
+        over[kind] = n - (caps[kind] or MAX_SEGMENTS)
+        if over[kind] > 0 then any = true end
+    end
+    if not any then return end
+
+    -- Oldest first, so each kind loses its oldest.
+    local kept, newIndex = {}, {}
+    for i, seg in ipairs(self.segments) do
+        local kind = seg.kind or "mplus"
+        if over[kind] > 0 then
+            over[kind] = over[kind] - 1
+        else
+            kept[#kept + 1] = seg
+            newIndex[i] = #kept
+        end
+    end
+    -- In place: other code holds this table.
+    wipe(self.segments)
+    for i, seg in ipairs(kept) do self.segments[i] = seg end
 
     local function Reindex(session)
         if type(session) ~= "string" or session:sub(1, 4) ~= "seg:" then
             return session
         end
         local idx = tonumber(session:sub(5))
-        if not idx then return "current" end
-        local moved = idx - excess
-        if moved < 1 then return "current" end
+        local moved = idx and newIndex[idx]
+        if not moved then return "current" end
         return "seg:" .. moved
     end
 
@@ -4835,11 +4884,27 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
 
     -- GetCombatSessionFromType(Overall) is called 3s after CHALLENGE_MODE_COMPLETED
     -- while still inside the instance — data is guaranteed available here.
+    return DPSMeter:SnapshotSession(Enum.DamageMeterSessionType.Overall, dungeonName, duration,
+        memberNameByGUID, { kind = "mplus", perRunRate = true })
+end
+
+-- Store one damage-meter session as a segment: every meter mode's rows with
+-- their per-spell breakdowns, plus the enemies damaged. Shared by the Mythic+
+-- run (the Overall session, SnapshotMythicRun above) and raid boss pulls (the
+-- Current session, SnapshotRaidPull). opts:
+--   kind        "mplus" | "raid" -- stored on the segment; pruning and "Last
+--               Run" go by it
+--   perRunRate  recompute DPS/HPS over `duration` (the key's real timer)
+--               rather than Blizzard's active-combat rate
+--   extra       fields copied onto the segment (encounterID, success, ...)
+function DPSMeter:SnapshotSession(sessionType, dungeonName, duration, memberNameByGUID, opts)
+    opts = opts or {}
+    memberNameByGUID = memberNameByGUID or {}
     -- LaunderNumber safely extracts tainted numbers if still in combat.
     local modes = {}
     for modeName, meterType in pairs(METER_MODE_MAP) do
         local ok, session = pcall(C_DamageMeter.GetCombatSessionFromType,
-            Enum.DamageMeterSessionType.Overall, meterType)
+            sessionType, meterType)
         if ok and session and session.combatSources and #session.combatSources > 0 then
             local isPerSecond = (modeName == "dps" or modeName == "hps")
             local entries = {}
@@ -4863,7 +4928,7 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
                 local shortN = (resolvedName or "?"):match("^([^%-]+)") or (resolvedName or "?")
                 local spells = {}
                 local ok2, srcData = pcall(C_DamageMeter.GetCombatSessionSourceFromType,
-                    Enum.DamageMeterSessionType.Overall, meterType, guid)
+                    sessionType, meterType, guid)
                 if ok2 and srcData and srcData.combatSpells then
                     for _, sp in ipairs(srcData.combatSpells) do
                         local spellInfo = sp.spellID and C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(sp.spellID)
@@ -4894,7 +4959,8 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
                 -- stored, so the segment holds one entry per player and every
                 -- later reader (chat reports, the seg: meter mode, the run
                 -- summary) sees a real count instead of a list of zeroes.
-                entries = AggregateDeathEntries(entries, "overall")
+                entries = AggregateDeathEntries(entries,
+                    sessionType == Enum.DamageMeterSessionType.Overall and "overall" or "current")
                 total = 0
                 for _, e in ipairs(entries) do total = total + (e.totalAmount or 0) end
             end
@@ -4904,14 +4970,14 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
 
     -- Bail if we got no data at all
     if not next(modes) then
-        print("|cff00ccff[DPSReport]|r M+ snapshot: no session data available, segment not saved.")
+        print("|cff00ccff[DPSReport]|r snapshot of " .. tostring(dungeonName) .. ": no session data available, not saved.")
         return
     end
 
     -- Snapshot enemy targets
     local targets = {}
     local edamageSession = C_DamageMeter.GetCombatSessionFromType(
-        Enum.DamageMeterSessionType.Overall, Enum.DamageMeterType.EnemyDamageTaken)
+        sessionType, Enum.DamageMeterType.EnemyDamageTaken)
     if edamageSession and edamageSession.combatSources then
         for _, enemy in ipairs(edamageSession.combatSources) do
             table.insert(targets, {
@@ -4926,7 +4992,7 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
     -- Recalculate amountPerSecond for dps/hps modes using full run duration.
     -- Blizzard's value only counts active combat time; dividing totalAmount by the
     -- real dungeon timer gives the true effective DPS/HPS over the whole key.
-    if duration > 0 then
+    if opts.perRunRate and duration > 0 then
         for modeName, modeData in pairs(modes) do
             if modeName == "dps" or modeName == "hps" then
                 for _, entry in ipairs(modeData.entries) do
@@ -4943,7 +5009,9 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
         duration = duration,
         modes    = modes,
         targets  = targets,
+        kind     = opts.kind or "mplus",
     }
+    for k, v in pairs(opts.extra or {}) do segment[k] = v end
     table.insert(DPSMeter.segments, segment)
     DPSMeter:PruneSegments()
     DPSMeter:SaveAllMeters()
@@ -4954,6 +5022,57 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
     if DPSMeter.widgetSessionDrop and DPSMeter.BuildWidgetSessionItems then
         DPSMeter.widgetSessionDrop:SetItems(DPSMeter.BuildWidgetSessionItems())
     end
+end
+
+-- Store a raid boss pull, kill or wipe, as a segment ("<Boss> (Heroic) - Wipe
+-- #3"), so attempts can be compared after the night. Raids only: Mythic+
+-- already stores the whole key.
+--
+-- Taken from the CURRENT session, which is the boss fight once combat has
+-- dropped. The meter's values are secret while the player is in combat, and
+-- ENCOUNTER_END can arrive before combat ends (adds, a wipe's run-back), so
+-- this waits for combat to drop -- up to 30s, then gives up rather than
+-- store "?" names and zeroes.
+function DPSMeter:SnapshotRaidPull(encounterID, encounterName, difficultyID, _, success)
+    local _, instanceType, _, difficultyName = GetInstanceInfo()
+    if instanceType ~= "raid" then return end
+    if issecretvalue(encounterID) or issecretvalue(success) or issecretvalue(difficultyID) then return end
+    local bossName = (not issecretvalue(encounterName) and encounterName) or "Boss"
+    local diffText = (difficultyName and not issecretvalue(difficultyName) and difficultyName ~= "")
+        and (" (" .. difficultyName .. ")") or ""
+
+    local tries = 0
+    local function Take()
+        if InCombatLockdown() then
+            tries = tries + 1
+            if tries <= 60 then C_Timer.After(0.5, Take) end
+            return
+        end
+        -- Pull number: this boss at this difficulty, among the stored pulls
+        -- from today.
+        local today = date("%Y-%m-%d")
+        local pull = 1
+        for _, seg in ipairs(DPSMeter.segments) do
+            if seg.kind == "raid" and seg.encounterID == encounterID
+               and seg.difficultyID == difficultyID and seg.date == today then
+                pull = pull + 1
+            end
+        end
+        local result = (success == 1) and "Kill" or "Wipe"
+        local name = string.format("%s%s - %s #%d", bossName, diffText, result, pull)
+
+        local ok, session = pcall(C_DamageMeter.GetCombatSessionFromType,
+            Enum.DamageMeterSessionType.Current, Enum.DamageMeterType.Dps)
+        local duration = ok and session and LaunderNumber(session.durationSeconds) or 0
+
+        DPSMeter:SnapshotSession(Enum.DamageMeterSessionType.Current, name, math.floor(duration or 0), nil, {
+            kind = "raid",
+            extra = { encounterID = encounterID, difficultyID = difficultyID, success = success,
+                date = today, pull = pull },
+        })
+    end
+    -- A moment for the meter to close the session, as the M+ path waits too.
+    C_Timer.After(1, Take)
 end
 
 -- SnapshotSegment is no longer needed: C_DamageMeter.GetAvailableCombatSessions()
