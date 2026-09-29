@@ -14,6 +14,7 @@ Releases are tag-driven. Pushing a `v*` tag runs `.github/workflows/release.yml`
 
 Two things are easy to get wrong:
 
+- Last shipped: **v1.26 (2026-09-29)**. `changelog.txt` still holds V1.26, so the next change starts by moving it to the archive and opening V1.27.
 - `changelog.txt` is uploaded **verbatim** as that release's CurseForge notes, so it must hold only the version being released. Older sections move to `CHANGELOG-ARCHIVE.txt`, which `.pkgmeta` ignores so it never ships. Leaving history in `changelog.txt` makes every release repost the entire backlog.
 - What ships is controlled by the `ignore:` list in `.pkgmeta`, not by `.gitignore`. Dev files (`CLAUDE.md`, `README.md`, `.luarc.json`, `.github`, `.claude`, the changelog archive) are excluded there; `LICENSE` and `changelog.txt` deliberately are not.
 
@@ -108,6 +109,21 @@ Blizzard's `UIPanelScrollFrameTemplate` scrollbar isn't part of `DR_COLORS`; `Sk
   `seenNameCache` now IS `DPSReportDB.seenNames` (the local is reassigned at load; every closure
   captures the variable) instead of a full copy of it.
 - `mythicRuns` was written by an old version and read by nothing; it is deleted at load.
+
+**Since V1.26 (2026-09-29):**
+
+- **Segments have a `kind`**: `"mplus"` (default, absent on old runs) or `"raid"`. Raid boss pulls are
+  saved from `ENCOUNTER_END` (`saveRaidPulls`, on) and named "Boss (Heroic) - Wipe #3"; a pull already
+  saved for the same `encounterID` is updated rather than duplicated, because ENCOUNTER_END can land
+  before combat ends. **Each kind has its own cap** (`MAX_SEGMENTS` 10 keys, `DPSMeter.MAX_RAID_PULLS`
+  20) so a raid night can never push saved keys out. Every "Last Run" feature skips `kind == "raid"`:
+  it means your last KEY.
+- **`PrintRunComparison`** (after a key, own chat only, never the group): your DPS, HPS (only when HPS
+  >= half your DPS, so a DPS's leech never shows) and deaths vs the most recent saved run of the SAME
+  dungeon, any level. M+ segments now carry `dungeon`/`level`/`date`; older ones fall back to parsing
+  "Dungeon +N" from the name. **`compareLastRun` is OFF by default** (user decision 2026-09-29, before
+  release) and every read is `== true`, so nil means off. The user's own profile may still hold `true`
+  from the pre-release default; no migration was written since no player ever had it.
 
 Note the shallow fill loop in `LoadSettings` (`if prof[k] == nil then prof[k] = v end`) copies by reference, so a nested table in `DEFAULT_SETTINGS` would be shared across every profile. That is why the summary line toggles are flat `autoSummary*` booleans rather than one table.
 
