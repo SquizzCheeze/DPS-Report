@@ -563,6 +563,7 @@ local DEFAULT_SETTINGS = {
     autoReportChannel = "party",
     resetOnMythicStart = false,
     saveRaidPulls = true,   -- store each raid boss pull (kill or wipe) as a segment
+    compareLastRun = true,  -- after a key, print your numbers vs your last run of that dungeon
 
     -- "summary" = the highlight reel below; "single" = one metric, whole group
     -- ranked highest to lowest. autoReportType only applies to "single", and
@@ -2243,6 +2244,12 @@ f:SetScript("OnEvent", function(self, event, ...)
 
             local function DoMythicSnapshot(readable)
                 SnapshotMythicRun(savedName, savedLevel, runTimeMs, completionMembers)
+                -- Your own chat only: how this run compares with your last
+                -- one of the same dungeon. Needs readable values, like the
+                -- announce below.
+                if readable and settings and settings.compareLastRun ~= false then
+                    DPSMeter:PrintRunComparison(#DPSMeter.segments)
+                end
                 if not readable then
                     -- Values were still secret: the segment holds "?" names and
                     -- zeroed amounts, so don't broadcast it to the group.
@@ -2807,6 +2814,7 @@ local function RefreshOptionsPanel()
     if panelWidgets.resetMythicCB then
         panelWidgets.resetMythicCB:SetChecked(settings.resetOnMythicStart or false)
         if panelWidgets.raidPullsCB then panelWidgets.raidPullsCB:SetChecked(settings.saveRaidPulls ~= false) end
+        if panelWidgets.compareCB then panelWidgets.compareCB:SetChecked(settings.compareLastRun ~= false) end
     end
     if panelWidgets.shortNamesCB then
         panelWidgets.shortNamesCB:SetChecked(settings.shortNames ~= false)
@@ -3242,6 +3250,13 @@ function DPSReport_OpenOptionsPanel()
     end)
     raidPullsCB:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
     panelWidgets.raidPullsCB = raidPullsCB
+    yOffset = yOffset - 24
+
+    local compareCB = CreateDRCheckbox(content, "After a key, compare with my last run of it", function(checked)
+        settings.compareLastRun = checked
+    end)
+    compareCB:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    panelWidgets.compareCB = compareCB
     yOffset = yOffset - 24
 
     -- === REAL-TIME METER ===
@@ -4885,7 +4900,9 @@ SnapshotMythicRun = function(savedName, savedLevel, runTimeMs, completionMembers
     -- GetCombatSessionFromType(Overall) is called 3s after CHALLENGE_MODE_COMPLETED
     -- while still inside the instance — data is guaranteed available here.
     return DPSMeter:SnapshotSession(Enum.DamageMeterSessionType.Overall, dungeonName, duration,
-        memberNameByGUID, { kind = "mplus", perRunRate = true })
+        memberNameByGUID, { kind = "mplus", perRunRate = true,
+            -- For PrintRunComparison: which dungeon, at what level, when.
+            extra = { dungeon = savedName, level = savedLevel, date = date("%Y-%m-%d") } })
 end
 
 -- Store one damage-meter session as a segment: every meter mode's rows with
@@ -5022,6 +5039,60 @@ function DPSMeter:SnapshotSession(sessionType, dungeonName, duration, memberName
     if DPSMeter.widgetSessionDrop and DPSMeter.BuildWidgetSessionItems then
         DPSMeter.widgetSessionDrop:SetItems(DPSMeter.BuildWidgetSessionItems())
     end
+end
+
+-- After a key: your DPS, HPS and deaths against your most recent saved run of
+-- the SAME dungeon, printed to your own chat (it is personal, so never to the
+-- group). Silent when there is no earlier run of it to compare with. Runs
+-- saved before V1.26 have no `dungeon` field, so the name ("Dungeon +8") is
+-- parsed for it.
+function DPSMeter:PrintRunComparison(idx)
+    local segs = self.segments
+    local seg = segs and segs[idx]
+    if not seg or seg.kind == "raid" then return end
+    local function Dungeon(s) return s.dungeon or (s.name and s.name:match("^(.-) %+%d+$")) or s.name end
+    local function Level(s) return s.level or tonumber(s.name and s.name:match(" %+(%d+)$")) end
+    local here = Dungeon(seg)
+    local prev
+    for j = idx - 1, 1, -1 do
+        local s = segs[j]
+        if s.kind ~= "raid" and Dungeon(s) == here then prev = s break end
+    end
+    if not prev then return end
+
+    local function Mine(s, mode)
+        local m = s.modes and s.modes[mode]
+        for _, e in ipairs(m and m.entries or {}) do
+            if e.isPlayer then return e end
+        end
+    end
+    local function Change(now, before)
+        if not now or not before or before <= 0 then return "" end
+        local pct = (now - before) / before * 100
+        return string.format(" (%s%d%%)", pct >= 0 and "+" or "", math.floor(pct + (pct >= 0 and 0.5 or -0.5)))
+    end
+
+    local parts = {}
+    local dNow, dOld = Mine(seg, "dps"), Mine(prev, "dps")
+    local hNow, hOld = Mine(seg, "hps"), Mine(prev, "hps")
+    local dpsNow = dNow and dNow.amountPerSecond or 0
+    local hpsNow = hNow and hNow.amountPerSecond or 0
+    if dpsNow > 0 then
+        parts[#parts + 1] = "DPS " .. AbbreviateNumbers(dpsNow) .. Change(dpsNow, dOld and dOld.amountPerSecond)
+    end
+    -- Healing only where it is a real part of what you did (a healer, or a
+    -- hybrid), not a DPS's leech.
+    if hpsNow > 0 and hpsNow >= dpsNow * 0.5 then
+        parts[#parts + 1] = "HPS " .. AbbreviateNumbers(hpsNow) .. Change(hpsNow, hOld and hOld.amountPerSecond)
+    end
+    local deNow, deOld = Mine(seg, "deaths"), Mine(prev, "deaths")
+    parts[#parts + 1] = string.format("deaths %d (was %d)",
+        deNow and deNow.totalAmount or 0, deOld and deOld.totalAmount or 0)
+
+    local lvl = Level(prev)
+    local when = prev.date and (", " .. prev.date) or ""
+    print(string.format("|cff00ccff[DPSReport]|r vs your last %s%s%s: %s", tostring(here),
+        lvl and (" +" .. lvl) or "", when, table.concat(parts, ", ")))
 end
 
 -- Store a raid boss pull, kill or wipe, as a segment ("<Boss> (Heroic) - Wipe
