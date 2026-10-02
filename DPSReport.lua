@@ -5783,6 +5783,92 @@ function MeterProto:CreateBar(parent, index)
     return bar
 end
 
+-- The hits that killed a Deaths-list player, from Blizzard's death recap.
+--
+-- The Deaths session has no spell breakdown -- each death row carries a
+-- deathRecapID instead, and C_DeathRecap reads ANY group member's recap by it
+-- (probed 2026-10-02 for Squizzcap: every field plain out of combat). This
+-- finds the player's newest death in the meter's session and returns it shaped
+-- like GetCombatSessionSourceFromType's result, so the tooltip and breakdown
+-- draw it with their existing rows. Each hit carries `hpText` (health when it
+-- landed), shown in the % column. nil + reason when it cannot be read: a saved
+-- snapshot (no recap IDs kept), or identities/recaps hidden mid-combat.
+local function ReadDeathHits(entry, session)
+    if not (entry and C_DeathRecap and C_DeathRecap.GetRecapEvents) then return nil end
+    if session and session:sub(1, 4) == "seg:" then return nil, "Not kept for saved runs." end
+    local ok, s
+    if session and session:sub(1, 4) == "sid:" then
+        ok, s = pcall(C_DamageMeter.GetCombatSessionFromID, tonumber(session:sub(5)), Enum.DamageMeterType.Deaths)
+    else
+        ok, s = pcall(C_DamageMeter.GetCombatSessionFromType,
+            session == "overall" and Enum.DamageMeterSessionType.Overall or Enum.DamageMeterSessionType.Current,
+            Enum.DamageMeterType.Deaths)
+    end
+    if not ok or type(s) ~= "table" or type(s.combatSources) ~= "table" then return nil end
+
+    local function Short(n) return n and (n:match("^([^%-]+)") or n) end
+    local guid = entry.sourceGUID
+    if issecretvalue(guid) or guid == "?" or guid == "" then guid = nil end
+    local name = entry.plainName or entry.name
+    if issecretvalue(name) or name == "?" then name = nil end
+    local isMe = entry.isPlayer
+    if issecretvalue(isMe) then isMe = nil end
+    local short = Short(name)
+
+    -- Newest death: recap IDs count up.
+    local bestID
+    for _, src in ipairs(s.combatSources) do
+        local id = src.deathRecapID
+        if id and not issecretvalue(id) and id ~= 0 then
+            local g, n, me = src.sourceGUID, src.name, src.isLocalPlayer
+            local match
+            if guid and g and not issecretvalue(g) then match = (g == guid)
+            elseif short and n and not issecretvalue(n) then match = (Short(n) == short)
+            elseif isMe and me ~= nil and not issecretvalue(me) then match = me and true or false end
+            if match and (not bestID or id > bestID) then bestID = id end
+        end
+    end
+    if not bestID then return nil, "No readable death recap right now." end
+
+    local okE, events = pcall(C_DeathRecap.GetRecapEvents, bestID)
+    local okM, maxHP = pcall(C_DeathRecap.GetRecapMaxHealth, bestID)
+    if not okE or type(events) ~= "table" or #events == 0 then return nil, "No readable death recap right now." end
+    if not okM or issecretvalue(maxHP) then maxHP = nil end
+    local spells, total = {}, 0
+    for i = 1, #events do
+        -- Typed loosely on purpose: the stub's DeathRecapEventInfo lacks
+        -- amount/currentHP/spellId/event, which the real events carry
+        -- (Squizzcap reads the same fields).
+        ---@type table
+        local ev = events[i]
+        local amount, hp, sid = ev.amount, ev.currentHP, ev.spellId
+        if issecretvalue(amount) or issecretvalue(sid) or issecretvalue(ev.event) then
+            return nil, "The game is hiding this recap right now."
+        end
+        local spellName, icon
+        if ev.event == "SWING_DAMAGE" then
+            sid = 88163 -- what Blizzard's recap shows for a melee swing
+            spellName = MELEE or "Melee"
+        elseif ev.event == "ENVIRONMENTAL_DAMAGE" then
+            local env = not issecretvalue(ev.environmentalType) and ev.environmentalType or nil
+            spellName = env and (_G["ACTION_ENVIRONMENTAL_DAMAGE_" .. string.upper(env)] or env) or "Environment"
+            icon = 136243
+        end
+        local info = sid and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(sid)
+        spellName = spellName or (info and info.name) or (not issecretvalue(ev.spellName) and ev.spellName) or "Unknown"
+        icon = icon or (info and info.iconID) or 136243
+        local hpText = ""
+        if maxHP and maxHP > 0 and hp and not issecretvalue(hp) then
+            hpText = string.format("%d%%", math.floor(math.min(100, hp / maxHP * 100) + 0.5))
+        end
+        amount = amount or 0
+        total = total + amount
+        spells[#spells + 1] = { spellID = sid, name = spellName, iconID = icon,
+            totalAmount = amount, amountPerSecond = 0, hpText = hpText }
+    end
+    return { combatSpells = spells, totalAmount = total, isDeath = true }
+end
+
 -- A Deaths-list click opens that player's newest death in Squizzcap (our
 -- death recap addon), which saves group members' deaths from the meter's own
 -- deathRecapIDs. Squizzcap matches on GUID, else on name; a "?" from SafeStr
@@ -6673,8 +6759,14 @@ function MeterProto:ShowBarTooltip(bar)
     -- the local player so tooltips still work mid-fight (sourceGUID is tainted then).
     local meterType = METER_MODE_MAP[self.mode] or Enum.DamageMeterType.Dps
     local isSavedSeg = self.session and self.session:sub(1, 4) == "seg:"
-    local ok, spellData
-    if isSavedSeg then
+    local isDeaths = (self.mode == "deaths")
+    local ok, spellData, deathWhy
+    if isDeaths then
+        -- A death has no spell breakdown; its recap's hits stand in, killing
+        -- blow first, with the health each one landed at under "HP".
+        spellData, deathWhy = ReadDeathHits(entry, self.session)
+        ok = spellData ~= nil
+    elseif isSavedSeg then
         if entry.spells and #entry.spells > 0 then
             ok = true
             spellData = { combatSpells = entry.spells, totalAmount = entry.totalAmount }
@@ -6734,33 +6826,41 @@ function MeterProto:ShowBarTooltip(bar)
                 row.dpsText:SetText("")
             end
 
-            -- Percent
-            local pctOk, pctVal = pcall(function()
-                local total = spellData.totalAmount or 0
-                if total > 0 then
-                    return string.format("%.1f%%", spell.totalAmount / total * 100)
-                end
-                return ""
-            end)
-            row.pctText:SetText(pctOk and pctVal or "")
+            -- Percent (a death's hits: health when the hit landed)
+            if spell.hpText then
+                row.pctText:SetText(spell.hpText)
+            else
+                local pctOk, pctVal = pcall(function()
+                    local total = spellData.totalAmount or 0
+                    if total > 0 then
+                        return string.format("%.1f%%", spell.totalAmount / total * 100)
+                    end
+                    return ""
+                end)
+                row.pctText:SetText(pctOk and pctVal or "")
+            end
 
             row:Show()
         end
     end
 
-    -- On the Deaths list a click opens the death in Squizzcap, when it is
-    -- installed (see OpenDeathInSquizzcap); say so at the bottom.
-    if not tip.hint then
-        tip.hint = tip:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        tip.hint:SetPoint("BOTTOMLEFT", 6, 5)
-        tip.hint:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
-        tip.hint:SetText("Click: open this death in Squizzcap")
+    -- Deaths: "HP" over the % column, why there are no hits when there are
+    -- none, and -- with Squizzcap installed -- what a click does, in the
+    -- footer's own line (a second line drawn there overlapped it).
+    tip.hPct:SetText(isDeaths and "HP" or "%")
+    if not tip.note then
+        tip.note = tip:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        tip.note:SetPoint("TOPLEFT", tip, "TOPLEFT", 6, -38)
+        tip.note:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
     end
-    local hint = self.mode == "deaths" and Squizzcap_OpenDeathOf ~= nil
-    tip.hint:SetShown(hint)
+    local note = isDeaths and spellCount == 0
+    tip.note:SetText(note and (deathWhy or "No death recap for this player.") or "")
+    tip.note:SetShown(note)
+    tip.footer:SetText((isDeaths and Squizzcap_OpenDeathOf) and "Click to open this death in Squizzcap"
+        or "Click for details")
 
     -- Size the tooltip to fit content
-    local totalH = 36 + spellCount * (TOOLTIP_ROW_HEIGHT + 1) + 20 + (hint and 14 or 0)
+    local totalH = 36 + spellCount * (TOOLTIP_ROW_HEIGHT + 1) + 20 + (note and 16 or 0)
     tip:SetHeight(math.max(60, totalH))
 
     -- Position anchored to the bar
@@ -7108,6 +7208,7 @@ function MeterProto:CreateBreakdownFrame()
     hPct:SetJustifyH("RIGHT")
     hPct:SetText("%")
     hPct:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+    frame.hdrPct = hPct
 
     local hDPS = spellHdr:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     hDPS:SetPoint("RIGHT", hPct, "LEFT", -4, 0)
@@ -7483,6 +7584,8 @@ function MeterProto:PopulateSpells(entry)
     if frame.hdrDPS then
         frame.hdrDPS:SetText(isPerSecond and "DPS" or "")
     end
+    local isDeaths = (bdMode == "deaths")
+    if frame.hdrPct then frame.hdrPct:SetText(isDeaths and "HP" or "%") end
 
     -- Fetch spell data.
     -- seg:  M+ stored snapshot  (entry.spells)
@@ -7493,7 +7596,11 @@ function MeterProto:PopulateSpells(entry)
     local isAPISession = bdSession and bdSession:sub(1, 4) == "sid:"
 
     local ok, spellData
-    if isSavedSeg then
+    if isDeaths then
+        -- The death's recap hits, killing blow first (see ReadDeathHits).
+        spellData = ReadDeathHits(entry, bdSession)
+        ok = spellData ~= nil
+    elseif isSavedSeg then
         if entry.spells and #entry.spells > 0 then
             ok = true
             spellData = { combatSpells = entry.spells, totalAmount = entry.totalAmount }
@@ -7548,14 +7655,18 @@ function MeterProto:PopulateSpells(entry)
             row.dpsText:SetText("")
         end
 
-        local pctOk, pctVal = pcall(function()
-            local total = spellData.totalAmount or 0
-            if total > 0 then
-                return string.format("%.1f%%", spell.totalAmount / total * 100)
-            end
-            return ""
-        end)
-        row.pctText:SetText(pctOk and pctVal or "")
+        if spell.hpText then
+            row.pctText:SetText(spell.hpText)
+        else
+            local pctOk, pctVal = pcall(function()
+                local total = spellData.totalAmount or 0
+                if total > 0 then
+                    return string.format("%.1f%%", spell.totalAmount / total * 100)
+                end
+                return ""
+            end)
+            row.pctText:SetText(pctOk and pctVal or "")
+        end
 
         -- Class-tinted bar color
         local r, g, b = 0.4, 0.4, 0.5

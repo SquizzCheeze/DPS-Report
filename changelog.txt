@@ -10,3 +10,7 @@ New:
   and everything that hit them that fight. Needs Squizzcap 1.3.0 or later;
   without it, a click opens the usual breakdown as before. The bar's
   tooltip says when a click will open Squizzcap.
+- The Deaths list's tooltip and breakdown now show the hits that killed
+  each player, killing blow first, with how much each did and the health
+  they were at when it landed. Read from Blizzard's death recap, so it
+  works without Squizzcap too. Not kept for saved runs.
