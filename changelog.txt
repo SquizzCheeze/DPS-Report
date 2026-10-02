@@ -13,4 +13,6 @@ New:
 - The Deaths list's tooltip and breakdown now show the hits that killed
   each player, killing blow first, with how much each did and the health
   they were at when it landed. Read from Blizzard's death recap, so it
-  works without Squizzcap too. Not kept for saved runs.
+  works without Squizzcap too. Not kept for saved runs. A player who died
+  more than once: the tooltip shows their last death and says how many
+  there were, and the breakdown lists every one, newest first.

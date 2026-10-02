@@ -5788,12 +5788,14 @@ end
 -- The Deaths session has no spell breakdown -- each death row carries a
 -- deathRecapID instead, and C_DeathRecap reads ANY group member's recap by it
 -- (probed 2026-10-02 for Squizzcap: every field plain out of combat). This
--- finds the player's newest death in the meter's session and returns it shaped
+-- finds the player's deaths in the meter's session and returns them shaped
 -- like GetCombatSessionSourceFromType's result, so the tooltip and breakdown
--- draw it with their existing rows. Each hit carries `hpText` (health when it
--- landed), shown in the % column. nil + reason when it cannot be read: a saved
--- snapshot (no recap IDs kept), or identities/recaps hidden mid-combat.
-local function ReadDeathHits(entry, session)
+-- draw them with their existing rows. Each hit carries `hpText` (health when
+-- it landed), shown in the % column, and `rank` (its place in that death);
+-- `allDeaths` adds every death with an `isHeader` row above each, and
+-- `deathCount` says how many there are. nil + reason when it cannot be read:
+-- a saved snapshot (no recap IDs kept), or identities/recaps hidden mid-combat.
+local function ReadDeathHits(entry, session, allDeaths)
     if not (entry and C_DeathRecap and C_DeathRecap.GetRecapEvents) then return nil end
     if session and session:sub(1, 4) == "seg:" then return nil, "Not kept for saved runs." end
     local ok, s
@@ -5815,8 +5817,10 @@ local function ReadDeathHits(entry, session)
     if issecretvalue(isMe) then isMe = nil end
     local short = Short(name)
 
-    -- Newest death: recap IDs count up.
-    local bestID
+    -- Every death of theirs in the session. The meter folds them into one row
+    -- with a count, but each keeps its own recap; IDs count up, so the
+    -- highest is the newest.
+    local ids = {}
     for _, src in ipairs(s.combatSources) do
         local id = src.deathRecapID
         if id and not issecretvalue(id) and id ~= 0 then
@@ -5825,48 +5829,66 @@ local function ReadDeathHits(entry, session)
             if guid and g and not issecretvalue(g) then match = (g == guid)
             elseif short and n and not issecretvalue(n) then match = (Short(n) == short)
             elseif isMe and me ~= nil and not issecretvalue(me) then match = me and true or false end
-            if match and (not bestID or id > bestID) then bestID = id end
+            if match then ids[#ids + 1] = id end
         end
     end
-    if not bestID then return nil, "No readable death recap right now." end
+    if #ids == 0 then return nil, "No readable death recap right now." end
+    table.sort(ids)
 
-    local okE, events = pcall(C_DeathRecap.GetRecapEvents, bestID)
-    local okM, maxHP = pcall(C_DeathRecap.GetRecapMaxHealth, bestID)
-    if not okE or type(events) ~= "table" or #events == 0 then return nil, "No readable death recap right now." end
-    if not okM or issecretvalue(maxHP) then maxHP = nil end
     local spells, total = {}, 0
-    for i = 1, #events do
-        -- Typed loosely on purpose: the stub's DeathRecapEventInfo lacks
-        -- amount/currentHP/spellId/event, which the real events carry
-        -- (Squizzcap reads the same fields).
-        ---@type table
-        local ev = events[i]
-        local amount, hp, sid = ev.amount, ev.currentHP, ev.spellId
-        if issecretvalue(amount) or issecretvalue(sid) or issecretvalue(ev.event) then
-            return nil, "The game is hiding this recap right now."
+    -- Appends one death's hits, killing blow first; false + reason if the game
+    -- will not hand that recap over.
+    local function AddRecap(recapID)
+        local okE, events = pcall(C_DeathRecap.GetRecapEvents, recapID)
+        local okM, maxHP = pcall(C_DeathRecap.GetRecapMaxHealth, recapID)
+        if not okE or type(events) ~= "table" or #events == 0 then return false, "No readable death recap right now." end
+        if not okM or issecretvalue(maxHP) then maxHP = nil end
+        for i = 1, #events do
+            -- Typed loosely on purpose: the stub's DeathRecapEventInfo lacks
+            -- amount/currentHP/spellId/event, which the real events carry
+            -- (Squizzcap reads the same fields).
+            ---@type table
+            local ev = events[i]
+            local amount, hp, sid = ev.amount, ev.currentHP, ev.spellId
+            if issecretvalue(amount) or issecretvalue(sid) or issecretvalue(ev.event) then
+                return false, "The game is hiding this recap right now."
+            end
+            local spellName, icon
+            if ev.event == "SWING_DAMAGE" then
+                sid = 88163 -- what Blizzard's recap shows for a melee swing
+                spellName = MELEE or "Melee"
+            elseif ev.event == "ENVIRONMENTAL_DAMAGE" then
+                local env = not issecretvalue(ev.environmentalType) and ev.environmentalType or nil
+                spellName = env and (_G["ACTION_ENVIRONMENTAL_DAMAGE_" .. string.upper(env)] or env) or "Environment"
+                icon = 136243
+            end
+            local info = sid and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(sid)
+            spellName = spellName or (info and info.name) or (not issecretvalue(ev.spellName) and ev.spellName) or "Unknown"
+            icon = icon or (info and info.iconID) or 136243
+            local hpText = ""
+            if maxHP and maxHP > 0 and hp and not issecretvalue(hp) then
+                hpText = string.format("%d%%", math.floor(math.min(100, hp / maxHP * 100) + 0.5))
+            end
+            amount = amount or 0
+            total = total + amount
+            spells[#spells + 1] = { spellID = sid, name = spellName, iconID = icon,
+                totalAmount = amount, amountPerSecond = 0, hpText = hpText, rank = i }
         end
-        local spellName, icon
-        if ev.event == "SWING_DAMAGE" then
-            sid = 88163 -- what Blizzard's recap shows for a melee swing
-            spellName = MELEE or "Melee"
-        elseif ev.event == "ENVIRONMENTAL_DAMAGE" then
-            local env = not issecretvalue(ev.environmentalType) and ev.environmentalType or nil
-            spellName = env and (_G["ACTION_ENVIRONMENTAL_DAMAGE_" .. string.upper(env)] or env) or "Environment"
-            icon = 136243
-        end
-        local info = sid and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(sid)
-        spellName = spellName or (info and info.name) or (not issecretvalue(ev.spellName) and ev.spellName) or "Unknown"
-        icon = icon or (info and info.iconID) or 136243
-        local hpText = ""
-        if maxHP and maxHP > 0 and hp and not issecretvalue(hp) then
-            hpText = string.format("%d%%", math.floor(math.min(100, hp / maxHP * 100) + 0.5))
-        end
-        amount = amount or 0
-        total = total + amount
-        spells[#spells + 1] = { spellID = sid, name = spellName, iconID = icon,
-            totalAmount = amount, amountPerSecond = 0, hpText = hpText }
+        return true
     end
-    return { combatSpells = spells, totalAmount = total, isDeath = true }
+
+    -- The tooltip shows the newest death only; the breakdown (`allDeaths`)
+    -- lists every one, newest first, each under a header row.
+    local first = allDeaths and 1 or #ids
+    for k = #ids, first, -1 do
+        if allDeaths and #ids > 1 then
+            spells[#spells + 1] = { isHeader = true, totalAmount = 0, amountPerSecond = 0,
+                name = string.format("Death %d of %d%s", k, #ids, k == #ids and " (latest)" or "") }
+        end
+        local okR, why = AddRecap(ids[k])
+        if not okR then return nil, why end
+    end
+    return { combatSpells = spells, totalAmount = total, isDeath = true, deathCount = #ids }
 end
 
 -- A Deaths-list click opens that player's newest death in Squizzcap (our
@@ -6766,6 +6788,13 @@ function MeterProto:ShowBarTooltip(bar)
         -- blow first, with the health each one landed at under "HP".
         spellData, deathWhy = ReadDeathHits(entry, self.session)
         ok = spellData ~= nil
+        -- The meter folds a player's deaths into one row; the tooltip has room
+        -- for one recap, so it says which (the breakdown lists them all).
+        -- Concatenating onto a name the game may be hiding is safe.
+        local n = spellData and spellData.deathCount or 0
+        if n > 1 then
+            tip.title:SetText(EntryDisplayName(entry) .. "  |cff999999last of " .. n .. " deaths|r")
+        end
     elseif isSavedSeg then
         if entry.spells and #entry.spells > 0 then
             ok = true
@@ -6788,6 +6817,13 @@ function MeterProto:ShowBarTooltip(bar)
         local spells = spellData.combatSpells
         local topSpell = spells[1]
         spellCount = math.min(TOOLTIP_MAX_SPELLS, #spells)
+        -- A death's hits run in time order, so scale its bars to the
+        -- biggest hit rather than the first (the killing blow).
+        if spellData.isDeath then
+            for _, sp in ipairs(spells) do
+                if sp.totalAmount > topSpell.totalAmount then topSpell = sp end
+            end
+        end
 
         -- Bar tint color
         local br, bg2, bb = 0.4, 0.4, 0.5
@@ -7597,8 +7633,9 @@ function MeterProto:PopulateSpells(entry)
 
     local ok, spellData
     if isDeaths then
-        -- The death's recap hits, killing blow first (see ReadDeathHits).
-        spellData = ReadDeathHits(entry, bdSession)
+        -- Every death's recap hits, newest death first, each under a header
+        -- row (see ReadDeathHits).
+        spellData = ReadDeathHits(entry, bdSession, true)
         ok = spellData ~= nil
     elseif isSavedSeg then
         if entry.spells and #entry.spells > 0 then
@@ -7627,12 +7664,24 @@ function MeterProto:PopulateSpells(entry)
 
     local spells = spellData.combatSpells
     local topSpell = spells[1]
+    -- A death's hits run in time order, not by size, and its rows include
+    -- headers, so the bars scale to its biggest hit (plain numbers, from the
+    -- recap) rather than to the first row.
+    local deathMax
+    if spellData.isDeath then
+        deathMax = 1
+        for _, sp in ipairs(spells) do
+            if sp.totalAmount > deathMax then deathMax = sp.totalAmount end
+        end
+    end
 
     for i = 1, #spells do
         local spell = spells[i]
         local row = self:GetSpellRow(i)
 
-        if topSpell then
+        if deathMax then
+            row:SetMinMaxValues(0, deathMax)
+        elseif topSpell then
             row:SetMinMaxValues(0, topSpell.totalAmount)
         end
         row:SetValue(spell.totalAmount)
@@ -7643,7 +7692,7 @@ function MeterProto:PopulateSpells(entry)
         local spellIcon = (spellInfo and spellInfo.iconID) or spell.iconID or 136243
 
         row.icon:SetTexture(spellIcon)
-        row.rankText:SetText(i)
+        row.rankText:SetText(spell.rank or i)
         row.nameText:SetText(spellName)
         row.amtText:SetFormattedText("%s", AbbreviateNumbers(spell.totalAmount, ABBREVIATE_OPTS_TOTAL))
 
@@ -7676,6 +7725,18 @@ function MeterProto:PopulateSpells(entry)
         end
         row:SetStatusBarColor(r, g, b, 0.6)
         row.spellID = spell.spellID
+        -- "Death 2 of 3 (latest)" above each death's hits: a label row, with
+        -- no icon, number, amount or spell tooltip.
+        if spell.isHeader then
+            row.icon:SetTexture(nil)
+            row.rankText:SetText("")
+            row.amtText:SetText("")
+            row.dpsText:SetText("")
+            row.pctText:SetText("")
+            row.nameText:SetText("|cffffd100" .. spell.name .. "|r")
+            row:SetValue(0)
+            row.spellID = nil
+        end
         row:Show()
     end
 
