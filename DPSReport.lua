@@ -19,6 +19,7 @@ local DPSMeter
 local SnapshotSegment
 local SnapshotMythicRun
 local AggregateDeathEntries
+local OpenDeathInSquizzcap
 local METER_MODE_MAP
 local DR_COLORS
 local ApplyDRBackdrop
@@ -5773,12 +5774,34 @@ function MeterProto:CreateBar(parent, index)
 
     bar:SetScript("OnMouseUp", function(self, button)
         if button == "LeftButton" and self.entry then
+            if meter.mode == "deaths" and OpenDeathInSquizzcap(self.entry) then return end
             meter:ShowBreakdown(self.entry)
         end
     end)
 
     bar:Hide()
     return bar
+end
+
+-- A Deaths-list click opens that player's newest death in Squizzcap (our
+-- death recap addon), which saves group members' deaths from the meter's own
+-- deathRecapIDs. Squizzcap matches on GUID, else on name; a "?" from SafeStr
+-- is no identity at all, so it is passed as nil. Returns true when Squizzcap
+-- opened something; false leaves the click to the usual breakdown.
+OpenDeathInSquizzcap = function(entry)
+    local open = Squizzcap_OpenDeathOf
+    if not open then return false end
+    local guid = entry.sourceGUID
+    if issecretvalue(guid) or guid == "?" or guid == "" then guid = nil end
+    local name = entry.plainName or entry.name
+    if issecretvalue(name) or name == "?" then name = nil end
+    local isMe = entry.isPlayer
+    if issecretvalue(isMe) then isMe = nil end
+    local ok, opened = pcall(open, guid, name, isMe)
+    if ok and opened then return true end
+    print("|cff00ccff[DPSReport]|r Squizzcap has no saved death for "
+        .. (isMe and "you" or (name or "this player")) .. ".")
+    return false
 end
 
 function MeterProto:CreateMeterFrame()
@@ -6725,8 +6748,19 @@ function MeterProto:ShowBarTooltip(bar)
         end
     end
 
+    -- On the Deaths list a click opens the death in Squizzcap, when it is
+    -- installed (see OpenDeathInSquizzcap); say so at the bottom.
+    if not tip.hint then
+        tip.hint = tip:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        tip.hint:SetPoint("BOTTOMLEFT", 6, 5)
+        tip.hint:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+        tip.hint:SetText("Click: open this death in Squizzcap")
+    end
+    local hint = self.mode == "deaths" and Squizzcap_OpenDeathOf ~= nil
+    tip.hint:SetShown(hint)
+
     -- Size the tooltip to fit content
-    local totalH = 36 + spellCount * (TOOLTIP_ROW_HEIGHT + 1) + 20
+    local totalH = 36 + spellCount * (TOOLTIP_ROW_HEIGHT + 1) + 20 + (hint and 14 or 0)
     tip:SetHeight(math.max(60, totalH))
 
     -- Position anchored to the bar

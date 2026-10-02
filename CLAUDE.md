@@ -14,7 +14,7 @@ Releases are tag-driven. Pushing a `v*` tag runs `.github/workflows/release.yml`
 
 Two things are easy to get wrong:
 
-- Last shipped: **v1.26 (2026-09-29)**. `changelog.txt` still holds V1.26, so the next change starts by moving it to the archive and opening V1.27.
+- Last shipped: **v1.26 (2026-09-29)**. V1.26 is archived; `changelog.txt` holds the open V1.27 (unshipped).
 - `changelog.txt` is uploaded **verbatim** as that release's CurseForge notes, so it must hold only the version being released. Older sections move to `CHANGELOG-ARCHIVE.txt`, which `.pkgmeta` ignores so it never ships. Leaving history in `changelog.txt` makes every release repost the entire backlog.
 - What ships is controlled by the `ignore:` list in `.pkgmeta`, not by `.gitignore`. Dev files (`CLAUDE.md`, `README.md`, `.luarc.json`, `.github`, `.claude`, the changelog archive) are excluded there; `LICENSE` and `changelog.txt` deliberately are not.
 
@@ -69,6 +69,8 @@ When the tracker declines to answer, that is deliberate — a tally that started
 - Outside a key there is no such total, so `CoversOverallByDuration` compares watched wall-clock against the session's combat time. Note `durationSeconds` is on the secret list and **comparing a secret throws** — thrown from there it took `MeterProto`'s refresh ticker down with it, which presented as a meter that silently stopped updating rather than as an error.
 
 `UnitIsPlayer` gates the poll, so pets never enter the tally. `IsGroupPlayerEntry` (~L1200) does the same job on the *summary* side for the API-sourced modes: `C_DamageMeter` lists a mage's water elemental as its own source, and since a pet takes no avoidable damage it won "Least Avoidable DMG" outright. The test is the GUID prefix (`Player-` vs `Pet-`/`Creature-`), falling back to `specIconID` for segments saved before GUIDs were stored. It gates `CollectSummaryPlayers` only — the live meters still show pet damage, which is what people want there.
+
+**Clicking a Deaths bar opens that player's death in Squizzcap** (V1.27, `OpenDeathInSquizzcap`, forward-declared at the top). It calls Squizzcap's one public global, `Squizzcap_OpenDeathOf(guid, name, isPlayer)`, which opens the newest death Squizzcap saved for that player (GUID match, else realm-stripped name) and returns true. Squizzcap saves group members' deaths itself from the meter's `deathRecapID`s, so nothing passes between the addons but this call. A `"?"` from `SafeStr` is passed as nil, never as an identity. Without Squizzcap, or when it has nothing saved for that player, the click falls through to the normal breakdown (with a chat line in the second case), and the bar tooltip shows a "Click: open this death in Squizzcap" hint only while the global exists.
 
 `DeathTracker:PrintDiagnostics()` — the "Death Tracking Diagnostics" button under Tools — prints per unit whether `guid`/`dead`/`feign` came back readable or restricted, plus both totals. Which units the game lets an addon read is not documented and cannot be reasoned about from outside the game.
 
