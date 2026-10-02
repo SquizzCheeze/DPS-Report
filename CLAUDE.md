@@ -14,7 +14,7 @@ Releases are tag-driven. Pushing a `v*` tag runs `.github/workflows/release.yml`
 
 Two things are easy to get wrong:
 
-- Last shipped: **v1.26 (2026-09-29)**. V1.26 is archived; `changelog.txt` holds the open V1.27 (unshipped).
+- Last shipped: **v1.27 (2026-10-02)**. `changelog.txt` holds V1.27, so the next change starts by moving it to the archive and opening V1.28.
 - `changelog.txt` is uploaded **verbatim** as that release's CurseForge notes, so it must hold only the version being released. Older sections move to `CHANGELOG-ARCHIVE.txt`, which `.pkgmeta` ignores so it never ships. Leaving history in `changelog.txt` makes every release repost the entire backlog.
 - What ships is controlled by the `ignore:` list in `.pkgmeta`, not by `.gitignore`. Dev files (`CLAUDE.md`, `README.md`, `.luarc.json`, `.github`, `.claude`, the changelog archive) are excluded there; `LICENSE` and `changelog.txt` deliberately are not.
 
