@@ -5865,6 +5865,10 @@ local function ReadDeathHits(entry, session, allDeaths)
             local info = sid and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(sid)
             spellName = spellName or (info and info.name) or (not issecretvalue(ev.spellName) and ev.spellName) or "Unknown"
             icon = icon or (info and info.iconID) or 136243
+            -- The rows prefer the spell ID's own name, which for the melee
+            -- stand-in is "Attack"; dropping the ID keeps "Melee" (as
+            -- Squizzcap and Blizzard's recap say) and the icon set above.
+            if ev.event == "SWING_DAMAGE" then sid = nil end
             local hpText = ""
             if maxHP and maxHP > 0 and hp and not issecretvalue(hp) then
                 hpText = string.format("%d%%", math.floor(math.min(100, hp / maxHP * 100) + 0.5))
