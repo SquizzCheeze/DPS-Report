@@ -286,6 +286,13 @@ local DeathTracker = {
     startedAt = {},  -- scope -> GetTime() when the current tally began
     keyDeaths = nil, -- GetDeathCount() captured at CHALLENGE_MODE_COMPLETED
     runFromStart = false, -- true when we were polling from CHALLENGE_MODE_START
+    -- Spirit of Redemption (see Reconcile): GetDeathCount minus our run tally
+    -- when the key was picked up, how many polls the key has been ahead, and
+    -- GUID -> GetTime() until which a credited priest's flag flip is the SAME
+    -- death (the angel form ending), not a second one.
+    keyBase  = nil,
+    behind   = 0,
+    sorUntil = {},
     keepAlive = false,
     ticker   = nil,
 }
@@ -337,9 +344,13 @@ function DeathTracker:Poll()
                 if dead and not feign then
                     if not self.wasDead[guid] then
                         self.wasDead[guid] = true
-                        self.overall[guid] = (self.overall[guid] or 0) + 1
-                        self.current[guid] = (self.current[guid] or 0) + 1
-                        self.run[guid]     = (self.run[guid]     or 0) + 1
+                        if (self.sorUntil[guid] or 0) > GetTime() then
+                            -- Already credited by Reconcile when the angel form
+                            -- began; this is that death landing, not a new one.
+                            self.sorUntil[guid] = nil
+                        else
+                            self:Credit(guid)
+                        end
                     end
                 else
                     self.wasDead[guid] = nil
@@ -347,6 +358,7 @@ function DeathTracker:Poll()
             end
         end
     end
+    self:Reconcile()
 
     -- Stamp when a tally started covering its session, so the completeness
     -- tests below can tell later whether it saw the whole thing.
@@ -360,6 +372,76 @@ function DeathTracker:Poll()
     -- Self-healing: an abandoned key never fires CHALLENGE_MODE_COMPLETED, so
     -- drop the keep-alive as soon as the key is gone rather than tick forever.
     if self.keepAlive and not IsKeyActive() then self.keepAlive = false end
+end
+
+function DeathTracker:Credit(guid)
+    self.overall[guid] = (self.overall[guid] or 0) + 1
+    self.current[guid] = (self.current[guid] or 0) + 1
+    self.run[guid]     = (self.run[guid]     or 0) + 1
+end
+
+-- The group's one priest healer, or nil when there is none or more than one.
+local function LonePriestHealer()
+    local found
+    local n = GetNumGroupMembers()
+    local prefix = IsInRaid() and "raid" or "party"
+    local last = IsInRaid() and n or (n - 1)
+    for i = 0, math.max(0, last) do
+        local unit = (i == 0) and "player" or (prefix .. i)
+        if UnitExists(unit) and UnitIsPlayer(unit) then
+            local _, class = UnitClass(unit)
+            local role = UnitGroupRolesAssigned(unit)
+            local guid = UnitGUID(unit)
+            if class and not issecretvalue(class) and role and not issecretvalue(role)
+               and guid and not issecretvalue(guid) and class == "PRIEST" and role == "HEALER" then
+                if found and found ~= guid then return nil end
+                found = guid
+            end
+        end
+    end
+    return found
+end
+
+-- Spirit of Redemption (user report 2026-10-11). A Holy priest who "dies" turns
+-- into an angel instead of a corpse, so UnitIsDeadOrGhost never flips and the
+-- poll above never sees it -- and with Restitution they come back without ever
+-- being flagged dead at all. The KEY still counts it (GetDeathCount, and the
+-- time penalty). So: when the key's count runs ahead of our run tally and stays
+-- ahead for three polls (it can lead us by a tick), someone died unseen; with
+-- exactly one priest healer in the group that is their Spirit of Redemption,
+-- and it is credited to them. If their angel form then ends in a real death
+-- (no Restitution) inside 20 s, the poll treats that flip as the same death
+-- (sorUntil). With no lone priest healer the gap is accepted rather than
+-- guessed at. The count it reconciles against is feign-free, so feigns stay out.
+function DeathTracker:Reconcile()
+    if not IsKeyActive() then self.keyBase, self.behind = nil, 0 return end
+    local kc = self:KeyDeathCount()
+    if not kc then return end
+    local ours = self:Total("run")
+    if not self.keyBase then
+        -- Picked up now (key start, or a /reload mid-key): deaths before this
+        -- point are not ours to explain.
+        self.keyBase, self.behind = kc - ours, 0
+        return
+    end
+    local extra = kc - self.keyBase - ours
+    if extra <= 0 then
+        self.behind = 0
+        -- Ahead of the key (a death it did not count): re-anchor rather than
+        -- let it hide a later Spirit of Redemption.
+        if extra < 0 then self.keyBase = kc - ours end
+        return
+    end
+    self.behind = self.behind + 1
+    if self.behind < 3 then return end
+    self.behind = 0
+    local priest = LonePriestHealer()
+    if priest then
+        for _ = 1, extra do self:Credit(priest) end
+        self.sorUntil[priest] = GetTime() + 20
+    else
+        self.keyBase = self.keyBase + extra
+    end
 end
 
 function DeathTracker:Start()
@@ -2172,6 +2254,8 @@ f:SetScript("OnEvent", function(self, event, ...)
         -- the run tally is what the summary reports.
         DeathTracker.keyDeaths = nil
         DeathTracker:Reset("run")
+        DeathTracker.keyBase, DeathTracker.behind = nil, 0
+        wipe(DeathTracker.sorUntil)
         DeathTracker.keepAlive = true
         DeathTracker.runFromStart = true
         DeathTracker:Start()
