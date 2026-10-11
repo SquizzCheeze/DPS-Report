@@ -293,6 +293,9 @@ local DeathTracker = {
     keyBase  = nil,
     behind   = 0,
     sorUntil = {},
+    -- Each death as it was counted, oldest first, per scope: { guid, t }. The
+    -- Deaths meter's "in time order" view is drawn from these (V1.28).
+    events   = { overall = {}, current = {}, run = {} },
     keepAlive = false,
     ticker   = nil,
 }
@@ -375,9 +378,12 @@ function DeathTracker:Poll()
 end
 
 function DeathTracker:Credit(guid)
-    self.overall[guid] = (self.overall[guid] or 0) + 1
-    self.current[guid] = (self.current[guid] or 0) + 1
-    self.run[guid]     = (self.run[guid]     or 0) + 1
+    local now = GetTime()
+    for _, scope in ipairs(DEATH_SCOPES) do
+        self[scope][guid] = (self[scope][guid] or 0) + 1
+        local ev = self.events[scope]
+        ev[#ev + 1] = { guid = guid, t = now }
+    end
 end
 
 -- The group's one priest healer, or nil when there is none or more than one.
@@ -473,6 +479,7 @@ end
 -- their flag would credit them a second death on the next poll.
 function DeathTracker:Reset(scope)
     wipe(self[scope])
+    wipe(self.events[scope])
     self.armed[scope] = false
 end
 
@@ -520,13 +527,15 @@ end
 -- The deaths list for `scope` built from our own tally, or nil meaning "fall
 -- back to whatever C_DamageMeter reports". An EMPTY table is a real answer --
 -- we watched and nobody died -- so callers must test for nil, not emptiness.
-function DeathTracker:BuildEntries(scope)
-    local tally
+-- Which of our tallies answers for `scope` -- "current", "run" or "overall" --
+-- or nil when none can be trusted. Shared by BuildEntries and BuildTimeline so
+-- the two views can never disagree about whose deaths they cover.
+function DeathTracker:TallyFor(scope)
     if scope == "current" then
         -- We reset this and start polling at the pull, so once armed it has
         -- seen the whole combat by construction.
         if not self.armed.current then return nil end
-        tally = self.current
+        return "current"
     elseif scope == "overall" then
         -- In a key, and for as long as the Overall session still holds only
         -- that key, the run tally IS the overall session.
@@ -541,14 +550,56 @@ function DeathTracker:BuildEntries(scope)
             -- Note we do NOT re-check the total when runFromStart: we polled the
             -- whole key, and GetDeathCount can lead our poll by up to one tick,
             -- which would flicker the list back to the API's on every death.
-            tally = self.run
-        else
-            if not self:CoversOverallByDuration() then return nil end
-            tally = self.overall
+            return "run"
         end
-    else
-        return nil
+        if not self:CoversOverallByDuration() then return nil end
+        return "overall"
     end
+    return nil
+end
+
+-- The Deaths meter's "in time order" view: one row per DEATH, oldest first,
+-- instead of one per player with a count (user request 2026-10-11). Each row
+-- carries `valueLabel` (the time into the session, drawn in place of the
+-- value), `deathIndex` (which of that player's deaths it is, oldest = 1) and
+-- `deathCount`, so the tooltip and the Squizzcap click open THAT death. Every
+-- bar is full: they are not compared, they are listed. nil = no trusted tally
+-- (the caller falls back to the per-player list). Display only -- the run
+-- summary, saved runs and chat reports keep their per-player counts.
+function DeathTracker:BuildTimeline(scope)
+    local name = self:TallyFor(scope)
+    if not name then return nil end
+    local start = self.startedAt[name] or 0
+    local selfGUID = UnitGUID("player")
+    local seen, perGuid, out = {}, {}, {}
+    for _, ev in ipairs(self.events[name]) do perGuid[ev.guid] = (perGuid[ev.guid] or 0) + 1 end
+    for _, ev in ipairs(self.events[name]) do
+        local guid = ev.guid
+        seen[guid] = (seen[guid] or 0) + 1
+        local info = self.info[guid]
+        local full = info and info.name
+        local secs = math.max(0, math.floor(ev.t - start))
+        out[#out + 1] = {
+            name            = full and (full:match("^([^%-]+)") or full) or "?",
+            plainName       = full,
+            class           = info and info.class,
+            sourceGUID      = guid,
+            isPlayer        = (guid == selfGUID),
+            displayValue    = 1,
+            totalAmount     = 1,
+            amountPerSecond = 0,
+            valueLabel      = string.format("%d:%02d", math.floor(secs / 60), secs % 60),
+            deathIndex      = seen[guid],
+            deathCount      = perGuid[guid],
+        }
+    end
+    return out
+end
+
+function DeathTracker:BuildEntries(scope)
+    local name = self:TallyFor(scope)
+    if not name then return nil end
+    local tally = self[name]
 
     local selfGUID = UnitGUID("player")
     local out = {}
@@ -667,6 +718,10 @@ local DEFAULT_SETTINGS = {
     autoSummaryDispels    = true,
     autoSummaryAvoidable  = true,
     autoSummaryDeaths     = true,
+
+    -- Deaths meter: one row per death in the order they happened (true), or
+    -- one row per player with a count (false). V1.28.
+    deathsTimeline = true,
 
     shortNames = true,
     widgetShown = true,
@@ -2910,6 +2965,9 @@ local function RefreshOptionsPanel()
     if panelWidgets.meterLockedCB then
         panelWidgets.meterLockedCB:SetChecked(settings.meterLocked or false)
     end
+    if panelWidgets.deathsTimelineCB then
+        panelWidgets.deathsTimelineCB:SetChecked(settings.deathsTimeline ~= false)
+    end
     if panelWidgets.pinSelfCB then
         panelWidgets.pinSelfCB:SetChecked(settings.pinSelf or false)
     end
@@ -3378,6 +3436,21 @@ function DPSReport_OpenOptionsPanel()
     end)
     pinSelfCB:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
     panelWidgets.pinSelfCB = pinSelfCB
+    yOffset = yOffset - 28
+
+    local timelineCB = CreateDRCheckbox(content, "Deaths in time order", function(checked)
+        settings.deathsTimeline = checked
+        if DPSMeter and DPSMeter.meters then
+            for _, meter in ipairs(DPSMeter.meters) do
+                if meter.mode == "deaths" then
+                    meter:LoadFromAPI()
+                    meter:RefreshDisplay()
+                end
+            end
+        end
+    end)
+    timelineCB:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    panelWidgets.deathsTimelineCB = timelineCB
     yOffset = yOffset - 32
 
     local barHeightSlider = CreateDRSlider(content, "Bar Height", 300, 10, 32, 1)
@@ -5438,8 +5511,11 @@ function MeterProto:LoadFromAPI()
     -- This mode returns one row per death event; fold to one row per player,
     -- and correct the count against observed deaths (see AggregateDeathEntries).
     if self.mode == "deaths" then
-        self.entries = AggregateDeathEntries(self.entries,
-            self.session == "overall" and "overall" or "current")
+        local scope = self.session == "overall" and "overall" or "current"
+        -- In time order when asked (the default), from our own tally; the
+        -- per-player list when it is off or our tally cannot answer.
+        local timeline = (not settings or settings.deathsTimeline ~= false) and DeathTracker:BuildTimeline(scope)
+        self.entries = timeline or AggregateDeathEntries(self.entries, scope)
     end
 end
 
@@ -5967,9 +6043,18 @@ local function ReadDeathHits(entry, session, allDeaths)
 
     -- The tooltip shows the newest death only; the breakdown (`allDeaths`)
     -- lists every one, newest first, each under a header row.
-    local first = allDeaths and 1 or #ids
-    for k = #ids, first, -1 do
-        if allDeaths and #ids > 1 then
+    local first, last = (allDeaths and 1 or #ids), #ids
+    -- A row of the in-time-order view is ONE death (deathIndex of
+    -- deathCount, oldest = 1): show just its recap. Matched from the NEWEST
+    -- end, so a recap the meter does not hold for an early death (a feign
+    -- row, an uncaught Spirit of Redemption) cannot shift the recent ones.
+    if entry.deathIndex and entry.deathCount then
+        local k = #ids - (entry.deathCount - entry.deathIndex)
+        if k < 1 then return nil, "No readable death recap for this death." end
+        first, last = k, k
+    end
+    for k = last, first, -1 do
+        if allDeaths and first ~= last then
             spells[#spells + 1] = { isHeader = true, totalAmount = 0, amountPerSecond = 0,
                 name = string.format("Death %d of %d%s", k, #ids, k == #ids and " (latest)" or "") }
         end
@@ -5993,7 +6078,12 @@ OpenDeathInSquizzcap = function(entry)
     if issecretvalue(name) or name == "?" then name = nil end
     local isMe = entry.isPlayer
     if issecretvalue(isMe) then isMe = nil end
-    local ok, opened = pcall(open, guid, name, isMe)
+    -- A row of the in-time-order view is one particular death: ask for it by
+    -- how far back it is (1 = their newest). Older Squizzcap ignores the
+    -- extra argument and opens the newest, as before.
+    local fromLatest = (entry.deathIndex and entry.deathCount)
+        and (entry.deathCount - entry.deathIndex + 1) or nil
+    local ok, opened = pcall(open, guid, name, isMe, fromLatest)
     if ok and opened then return true end
     print("|cff00ccff[DPSReport]|r Squizzcap has no saved death for "
         .. (isMe and "you" or (name or "this player")) .. ".")
@@ -6686,6 +6776,10 @@ function MeterProto:RefreshDisplay()
                     AbbreviateNumbers(entry.amountPerSecond, ABBREVIATE_OPTS_PS),
                     AbbreviateNumbers(entry.totalAmount, ABBREVIATE_OPTS_TOTAL)
                 )
+            elseif entry.valueLabel then
+                -- A plain label in place of the number: the Deaths timeline's
+                -- time of death.
+                bar.valueText:SetText(entry.valueLabel)
             else
                 bar.valueText:SetFormattedText("%s",
                     AbbreviateNumbers(entry.displayValue, ABBREVIATE_OPTS_TOTAL)
@@ -6880,7 +6974,12 @@ function MeterProto:ShowBarTooltip(bar)
         -- for one recap, so it says which (the breakdown lists them all).
         -- Concatenating onto a name the game may be hiding is safe.
         local n = spellData and spellData.deathCount or 0
-        if n > 1 then
+        if entry.deathIndex and entry.deathCount then
+            -- A row of the in-time-order view is one death: say which.
+            local which = entry.deathCount > 1
+                and ("death " .. entry.deathIndex .. " of " .. entry.deathCount .. " - ") or ""
+            tip.title:SetText(EntryDisplayName(entry) .. "  |cff999999" .. which .. (entry.valueLabel or "") .. "|r")
+        elseif n > 1 then
             tip.title:SetText(EntryDisplayName(entry) .. "  |cff999999last of " .. n .. " deaths|r")
         end
     elseif isSavedSeg then
