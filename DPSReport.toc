@@ -1,4 +1,4 @@
-## Interface: 120100, 120105
+## Interface: 120105
 ## Title: DPS Report
 ## Notes: Lightweight Damage Meter using blizzards built in damage meter API. Uses /dps
 ## Author: Squizzcheeze
