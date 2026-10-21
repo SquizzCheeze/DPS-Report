@@ -20,3 +20,4 @@
 *.otf binary
 *.ogg binary
 *.mp3 binary
+*.cmd text eol=crlf
