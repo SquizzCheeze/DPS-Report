@@ -1,22 +1,18 @@
 DPS Report Changelog
 ====================
 
-V1.28
-
-Fixed:
-
-- A Holy Priest's death taken by Spirit of Redemption was missing from the
-  Deaths list in Mythic+, though the key counted it and took the time.
-  They become an angel rather than dying - and with Restitution never die
-  at all - so nothing flagged them dead. When the key's death count goes
-  up with nobody seen dying, the death is now credited to the group's
-  priest healer.
+V1.29
 
 New:
 
-- Deaths in time order (Meter settings, on by default): the Deaths list
-  shows each death on its own row in the order they happened, with when it
-  happened (minutes into the key or fight) where the count used to be.
-  Hovering a row shows that death's hits, and clicking opens that death in
-  Squizzcap. Untick it for one row per player with a count, as before. The
-  end-of-run summary and saved runs still count per player.
+- DPS Graph: click the G on any meter's title bar (or type /dpsgraph). Every
+  fight this session is recorded, one bar per second, for you and each group
+  member - DPS, total damage, HPS or total healing. Hover the graph for the
+  value at that moment; < and > step through your last 10 fights, click the
+  player name to switch player, and - / + change the range.
+  The game hides these numbers from addons during combat, so the bars are
+  drawn by the game itself and the range is a guess until the fight ends,
+  when it rescales from the final totals. Graphs last until you /reload or
+  log out; the game does not let addons save them. Two players with the same
+  class and spec can't be told apart mid-fight, so they are left out of that
+  fight's graph.

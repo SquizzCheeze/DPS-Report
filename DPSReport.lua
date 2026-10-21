@@ -6293,6 +6293,28 @@ function MeterProto:CreateMeterFrame()
         DPSMeter:SaveAllMeters()
     end)
 
+    -- "G" button: the DPS/HPS graph window (DPSReport_Graph.lua), left of "+".
+    local graphBtn = CreateFrame("Button", nil, titleBar)
+    graphBtn:SetSize(14, 14)
+    graphBtn:SetPoint("RIGHT", addBtn, "LEFT", -3, 0)
+    local graphText = graphBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    graphText:SetPoint("CENTER", 0, 0)
+    graphText:SetText("G")
+    graphText:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+    graphBtn:SetScript("OnEnter", function()
+        graphText:SetTextColor(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3])
+        GameTooltip:SetOwner(graphBtn, "ANCHOR_BOTTOM")
+        GameTooltip:AddLine("DPS / HPS graph")
+        GameTooltip:Show()
+    end)
+    graphBtn:SetScript("OnLeave", function()
+        graphText:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+        GameTooltip:Hide()
+    end)
+    graphBtn:SetScript("OnClick", function()
+        if DPSReport_ToggleGraph then DPSReport_ToggleGraph() end
+    end)
+
     -- Break-snap button: small accent dot at the bottom-right of the frame,
     -- visible only when this frame is snapped to another.
     local breakSnapBtn = CreateFrame("Button", nil, frame, "BackdropTemplate")
@@ -8479,4 +8501,20 @@ function DPSReport_ToggleMeter()
         if settings then settings.meterShown = true end
         print("|cff00ccff[DPSReport]|r Meter shown.")
     end
+end
+
+-- ============================================================================
+-- Shared with DPSReport_Graph.lua (2026-10-21)
+--
+-- Everything above is file-local, so the graph reaches the pieces it reuses
+-- through the addon's private namespace rather than copying them. A do block,
+-- so none of this counts against the main chunk's 200-local limit.
+-- ============================================================================
+do
+    local _, ns = ...
+    ns.colors = DR_COLORS
+    ns.ApplyBackdrop = ApplyDRBackdrop
+    ns.ResolveName = ResolveSourcePlainName
+    ns.AbbrevPS = ABBREVIATE_OPTS_PS
+    ns.AbbrevTotal = ABBREVIATE_OPTS_TOTAL
 end

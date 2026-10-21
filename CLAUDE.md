@@ -14,7 +14,7 @@ Releases are tag-driven. Pushing a `v*` tag runs `.github/workflows/release.yml`
 
 Two things are easy to get wrong:
 
-- Last shipped: **v1.28 (2026-10-11)**. `changelog.txt` holds V1.28, so the next change starts by moving it to the archive and opening V1.29.
+- Last shipped: **v1.28 (2026-10-11)**. V1.28 has been moved to the archive and V1.29 is OPEN in `changelog.txt` (DPS Graph). Tag only when the user says.
 - `changelog.txt` is uploaded **verbatim** as that release's CurseForge notes, so it must hold only the version being released. Older sections move to `CHANGELOG-ARCHIVE.txt`, which `.pkgmeta` ignores so it never ships. Leaving history in `changelog.txt` makes every release repost the entire backlog.
 - What ships is controlled by the `ignore:` list in `.pkgmeta`, not by `.gitignore`. Dev files (`CLAUDE.md`, `README.md`, `.luarc.json`, `.github`, `.claude`, the changelog archive) are excluded there; `LICENSE` and `changelog.txt` deliberately are not.
 
@@ -29,6 +29,28 @@ A `.luarc.json` configures the Lua language server (Lua 5.1 runtime, matching Wo
 ## Slash commands (user-facing)
 
 `/dps` (defined via `SLASH_DPSREPORT1`) is the only slash command, and it **ignores its arguments** — the handler just calls `DPSReport_OpenOptionsPanel()`. Earlier revisions of this file and of the header comment in `DPSReport.lua` documented an argument surface (`dps`, `hps`, `overall`, `whisper <name>`, …) that was never implemented; `/dpsreport` was never registered either. Reporting happens through the meter windows, the quick-report widget, and the end-of-dungeon auto-announce.
+
+### DPS Graph (`DPSReport_Graph.lua`, V1.29, 2026-10-21, UNTESTED in game)
+
+Its own file. The main file only adds the "G" title-bar button (left of "+", calls the global
+`DPSReport_ToggleGraph`) and, at its very end, a `do` block exporting `DR_COLORS`, `ApplyDRBackdrop`,
+`ResolveSourcePlainName` and the two `ABBREVIATE_OPTS_*` tables on the addon namespace (`ns`).
+Built on what `/dpsprobe` measured:
+
+- **In combat:** samples the Current DamageDone and HealingDone sessions every second
+  (`PLAYER_REGEN_DISABLED` → `ENABLED`). Sources are told apart by `isLocalPlayer`
+  (key `"you"`) or `classFilename:specIconID`, the fields that stay plain. A key seen twice in
+  one sample is marked ambiguous and dropped for that fight.
+- **Storage:** samples are stored as the raw (secret) values and drawn by
+  `StatusBar:SetValue`. Hover prints them through `AbbreviateNumbers` and `SetFormattedText`.
+  Nothing reads them.
+- **Session only, by necessity:** stored secrets never become plain, so the last 10 fights are
+  kept in memory and lost on reload. After combat, `Finalise` reads the plain session (with
+  retries) for names and final values; those set the axis — the final value for totals, final
+  × 1.5 for rates, which can overshoot early. During combat the axis is a guess from the same
+  player's previous fight. The user can scale it with - / +.
+- **Limits:** no per-second deltas, peaks or smoothing, because there is no arithmetic on
+  secrets. DPS is the game's running `amountPerSecond`.
 
 ### `/dpsprobe` -- a TEMPORARY diagnostic (2026-10-21)
 

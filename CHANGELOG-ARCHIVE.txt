@@ -8,6 +8,26 @@ history as its release notes. Older sections move here instead of being
 deleted: many carry root-cause writeups worth grepping before assuming a bug
 is fresh. This file is in the .pkgmeta ignore list, so it never ships.
 
+V1.28
+
+Fixed:
+
+- A Holy Priest's death taken by Spirit of Redemption was missing from the
+  Deaths list in Mythic+, though the key counted it and took the time.
+  They become an angel rather than dying - and with Restitution never die
+  at all - so nothing flagged them dead. When the key's death count goes
+  up with nobody seen dying, the death is now credited to the group's
+  priest healer.
+
+New:
+
+- Deaths in time order (Meter settings, on by default): the Deaths list
+  shows each death on its own row in the order they happened, with when it
+  happened (minutes into the key or fight) where the count used to be.
+  Hovering a row shows that death's hits, and clicking opens that death in
+  Squizzcap. Untick it for one row per player with a count, as before. The
+  end-of-run summary and saved runs still count per player.
+
 V1.27
 
 New:
