@@ -105,45 +105,61 @@ local function Draw(c, field, value)
 end
 
 local function GroupUnits()
-    local units = {}
+    -- Players, then their pets: a hunter or warlock pet often holds threat,
+    -- and pet tokens may be restricted differently from player ones.
+    local units, pets = {}, {}
     if IsInRaid() then
-        for i = 1, GetNumGroupMembers() do units[#units + 1] = "raid" .. i end
+        for i = 1, GetNumGroupMembers() do
+            units[#units + 1] = "raid" .. i
+            pets[#pets + 1] = "raidpet" .. i
+        end
     else
-        units[1] = "player"
-        for i = 1, GetNumSubgroupMembers() do units[#units + 1] = "party" .. i end
+        units[1], pets[1] = "player", "pet"
+        for i = 1, GetNumSubgroupMembers() do
+            units[#units + 1] = "party" .. i
+            pets[#pets + 1] = "partypet" .. i
+        end
     end
-    return units
+    return units, pets
 end
 
 -----------------------------------------------------------------------
 -- Test 1: threat
 -----------------------------------------------------------------------
 
+-- One unit's threat reads. `p` prefixes every field ("" for players,
+-- "pet " for pets), so the two are counted separately.
+local function SampleUnitThreat(db, c, unit, p)
+    local ok, tanking, status, scaled, raw, value = pcall(UnitDetailedThreatSituation, unit, "target")
+    if not ok then
+        Bump(c, p .. "detailed.error")
+        NoteError(db, "UnitDetailedThreatSituation", tanking)
+    else
+        Bump(c, p .. "isTanking." .. Classify(tanking))
+        Bump(c, p .. "status." .. Classify(status))
+        Bump(c, p .. "scaledPercent." .. Classify(scaled))
+        Bump(c, p .. "rawPercent." .. Classify(raw))
+        Bump(c, p .. "threatValue." .. Classify(value))
+        if IsSecret(scaled) or scaled ~= nil then Draw(c, p .. "threatPercent", scaled) end
+    end
+    local okL, lead = pcall(UnitThreatPercentageOfLead, unit, "target")
+    if okL then Bump(c, p .. "percentOfLead." .. Classify(lead)) else NoteError(db, "UnitThreatPercentageOfLead", lead) end
+    local okS, vs = pcall(UnitThreatSituation, unit, "target")
+    if okS then Bump(c, p .. "situationVsTarget." .. Classify(vs)) else NoteError(db, "UnitThreatSituation(target)", vs) end
+    -- Control: the call SquizzFrames' aggro border makes.
+    local okA, any = pcall(UnitThreatSituation, unit)
+    if okA then Bump(c, p .. "situationAny." .. Classify(any)) else NoteError(db, "UnitThreatSituation", any) end
+end
+
 local function SampleThreat(db, c)
     if not (UnitExists("target") and UnitCanAttack("player", "target")) then return end
     Bump(c, "threatSamples")
-    for _, unit in ipairs(GroupUnits()) do
-        if UnitExists(unit) then
-            local ok, tanking, status, scaled, raw, value = pcall(UnitDetailedThreatSituation, unit, "target")
-            if not ok then
-                Bump(c, "detailed.error")
-                NoteError(db, "UnitDetailedThreatSituation", tanking)
-            else
-                Bump(c, "isTanking." .. Classify(tanking))
-                Bump(c, "status." .. Classify(status))
-                Bump(c, "scaledPercent." .. Classify(scaled))
-                Bump(c, "rawPercent." .. Classify(raw))
-                Bump(c, "threatValue." .. Classify(value))
-                if IsSecret(scaled) or scaled ~= nil then Draw(c, "threatPercent", scaled) end
-            end
-            local okL, lead = pcall(UnitThreatPercentageOfLead, unit, "target")
-            if okL then Bump(c, "percentOfLead." .. Classify(lead)) else NoteError(db, "UnitThreatPercentageOfLead", lead) end
-            local okS, vs = pcall(UnitThreatSituation, unit, "target")
-            if okS then Bump(c, "situationVsTarget." .. Classify(vs)) else NoteError(db, "UnitThreatSituation(target)", vs) end
-            -- Control: the call SquizzFrames' aggro border makes.
-            local okA, any = pcall(UnitThreatSituation, unit)
-            if okA then Bump(c, "situationAny." .. Classify(any)) else NoteError(db, "UnitThreatSituation", any) end
-        end
+    local units, pets = GroupUnits()
+    for _, unit in ipairs(units) do
+        if UnitExists(unit) then SampleUnitThreat(db, c, unit, "") end
+    end
+    for _, unit in ipairs(pets) do
+        if UnitExists(unit) then SampleUnitThreat(db, c, unit, "pet ") end
     end
 end
 

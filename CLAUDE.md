@@ -36,7 +36,7 @@ A `.luarc.json` configures the Lua language server (Lua 5.1 runtime, matching Wo
 wishlist ideas taken from the Forever addon "Rival" before anything is built on them. Unlisted --
 `/dps` still ignores arguments.
 
-1. **Threat:** for each group member against the target, is each of
+1. **Threat:** for each group member AND their pet (counted separately, fields prefixed "pet ") against the target, is each of
    `UnitDetailedThreatSituation`'s five returns, `UnitThreatPercentageOfLead` and
    `UnitThreatSituation(unit, "target")` plain, secret or nil? Does a secret percentage still draw
    through `StatusBar:SetValue` and `SetFormattedText`? As a control it samples
