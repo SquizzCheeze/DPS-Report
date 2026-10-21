@@ -16,3 +16,7 @@ New:
   log out; the game does not let addons save them. Two players with the same
   class and spec can't be told apart mid-fight, so they are left out of that
   fight's graph.
+- (Test) Import a finished key from your combat log into the graph, with the
+  real per-second numbers the game hides during play: run the exporter
+  script, then Import > Ctrl+V. Boss pulls are shaded, and Avg 1s/3s/5s
+  smooths the spikes.

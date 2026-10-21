@@ -52,6 +52,29 @@ Built on what `/dpsprobe` measured:
 - **Limits:** no per-second deltas, peaks or smoothing, because there is no arithmetic on
   secrets. DPS is the game's running `amountPerSecond`.
 
+**Key import (proof of concept, 2026-10-21, untested in game).** `Tools/DPSReportKeyExport.ps1`
+(launched by `Tools/Export Last Key.cmd`; `Tools` is in the `.pkgmeta` ignore list, so it does not
+ship). It is PowerShell 5.1 with an inline C# 5 parser (`Add-Type` — no newer C# syntax). It finds
+the last `CHALLENGE_MODE_START` that has a `CHALLENGE_MODE_END` after it, newest log first; 56 MB
+takes 1.3s. It counts:
+
+- **Damage:** per player per second, pets credited via `SPELL_SUMMON` and the advanced-log owner
+  field, friendly targets (flag 0x10) skipped. The amount is index 31 for spell-prefixed events and
+  28 for `SWING_DAMAGE` (not `_LANDED`), plus the absorbed portion 6 fields later.
+- **Healing:** amount minus overheal (index 31 − 33), plus `SPELL_ABSORBED`, read from the end of
+  the line (absorber GUID at n−10, amount at n−3).
+- **Specs:** `COMBATANT_INFO` field 25 is the spec ID (24 is armour).
+
+It writes `DRK1~K^dungeon^level^seconds^success^date~P^i^Name-Realm^spec~B^boss^start^end^kill~D^i^v,v,,v~H^i^…`
+(empty = 0) to the clipboard; `-OutFile` writes a file instead, for testing. Against the game's
+own saved segment for the same run, totals agree within 1–4%.
+
+In game, `Graph.OpenImport` opens a paste box (OnTextChanged reads the whole paste once). Parsing
+is `ParseKey`, exposed as `Graph.ParseKey`, and is tested out of game with fengari against a real
+export. An imported fight has `f.imported`: its values are plain, so `Render` smooths (`view.smooth`,
+Avg 1/3/5s), buckets, auto-scales, and shades boss pulls (`Graph.DrawBosses`). The hover names the
+boss. The local player's row becomes `"you"` by short name.
+
 ### `/dpsprobe` -- a TEMPORARY diagnostic (2026-10-21)
 
 `DPSReport_Probe.lua` (its own file and `.toc` line, so the main file is untouched). It measures two

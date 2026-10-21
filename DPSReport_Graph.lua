@@ -191,7 +191,8 @@ ns.Graph = Graph
 
 local win, plot, bars, hoverText, maxText, startText, endText, emptyText
 local fightLabel, playerBtn, metricBtns = nil, nil, {}
-local view = { fight = nil, player = "you", metric = "dps", zoom = 1 }
+local view = { fight = nil, player = "you", metric = "dps", zoom = 1, smooth = 3 }
+local TextButton   -- defined with the window; used by the import box above it
 
 local function GraphDB()
     if type(DPSReportDB) ~= "table" then return {} end
@@ -291,16 +292,46 @@ function Graph.Render()
     playerBtn.text:SetText(PlayerLabel(p) .. "  |cff888888(click: next)|r")
 
     local values = p and p[m.key] or {}
-    local top = AxisMax(f, p, m)
-    maxText:SetText(AbbreviateNumbers(top))
-    startText:SetText("0:00")
-    endText:SetText(Clock(f.n * SAMPLE_INTERVAL))
-
     local width = plot:GetWidth()
     local height = plot:GetHeight()
     local n = f.n
     local cols = math.max(1, math.min(n, math.floor(width / MIN_COLUMN)))
     local colW = width / cols
+
+    -- What each bar shows, and the top of the axis.
+    local colValue, colSample, top = {}, {}, nil
+    if f.imported then
+        -- Imported values are plain: smooth them, bucket them, scale to fit.
+        local series = Graph.Smoothed(values, n, m.rate and view.smooth or 1)
+        local peak = 0
+        for i = 1, cols do
+            local from = math.floor((i - 1) * n / cols) + 1
+            local to = math.max(from, math.floor(i * n / cols))
+            local v
+            if m.rate then
+                local sum = 0
+                for s = from, to do sum = sum + (series[s] or 0) end
+                v = sum / (to - from + 1)
+            else
+                v = series[to] or 0
+            end
+            colValue[i], colSample[i] = v, from
+            if v > peak then peak = v end
+        end
+        top = math.max(1, peak * 1.05 / view.zoom)
+    else
+        top = AxisMax(f, p, m)
+        for i = 1, cols do
+            -- Thinned when there are more seconds than room: show every k-th.
+            local idx = math.max(1, math.floor(i * n / cols + 0.5))
+            colValue[i], colSample[i] = values[idx], idx
+        end
+    end
+    maxText:SetText(AbbreviateNumbers(top))
+    startText:SetText("0:00")
+    endText:SetText(Clock(f.n * SAMPLE_INTERVAL))
+    Graph.DrawBosses(f, width)
+
     local r, g, b = Rgb(C.accent)
     local cc = p and p.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[p.class]
     if cc then r, g, b = cc.r, cc.g, cc.b end
@@ -319,10 +350,8 @@ function Graph.Render()
             bar:SetSize(math.max(1, colW - 1), height)
             bar:SetStatusBarColor(r, g, b, 0.85)
             bar:SetMinMaxValues(0, top)
-            -- Thinned when there are more seconds than room: show every k-th.
-            local idx = math.max(1, math.floor(i * n / cols + 0.5))
-            local v = values[idx]
-            bar.sample = idx
+            local v = colValue[i]
+            bar.sample, bar.value = colSample[i], v
             if Has(v) then bar:SetValue(v) else bar:SetValue(0) end
             bar:Show()
         elseif bar then
@@ -352,9 +381,16 @@ local function UpdateHover(_, elapsed)
     local i = math.min(Graph.cols, math.max(1, math.floor(x / Graph.colW) + 1))
     local bar = bars[i]
     local m = MetricDef()
-    local p = f.players[view.player]
-    local v = bar and p and p[m.key][bar.sample]
-    local when = Clock((bar and bar.sample or 0) * SAMPLE_INTERVAL)
+    local v = bar and bar.value
+    local sample = bar and bar.sample or 0
+    local when = Clock(sample * SAMPLE_INTERVAL)
+    -- Imported keys know their boss pulls: name the one under the cursor.
+    for _, boss in ipairs(f.bosses or {}) do
+        if sample >= boss.start and sample <= boss.stop then
+            when = when .. "  |cffffd100" .. boss.name .. "|r"
+            break
+        end
+    end
     if Has(v) then
         local opts = m.rate and ns.AbbrevPS or ns.AbbrevTotal
         hoverText:SetFormattedText("%s   %s %s", when, m.label, AbbreviateNumbers(v, opts))
@@ -363,7 +399,188 @@ local function UpdateHover(_, elapsed)
     end
 end
 
-local function TextButton(parent, label, onClick)
+-----------------------------------------------------------------------
+-- Imported keys (Tools\DPSReportKeyExport.ps1 -> clipboard -> paste box)
+-----------------------------------------------------------------------
+
+-- A trailing average over `window` seconds. Imported values are plain, so
+-- this is ordinary arithmetic -- the live graph can never do it.
+function Graph.Smoothed(values, n, window)
+    if window <= 1 then return values end
+    local out, sum = {}, 0
+    for i = 1, n do
+        sum = sum + (values[i] or 0)
+        if i > window then sum = sum - (values[i - window] or 0) end
+        out[i] = sum / math.min(i, window)
+    end
+    return out
+end
+
+local bossShades = {}
+
+-- Boss pulls shaded behind the bars (imported keys only).
+function Graph.DrawBosses(f, width)
+    local list = f.imported and f.bosses or {}
+    for i = 1, math.max(#list, #bossShades) do
+        local boss, tex = list[i], bossShades[i]
+        if boss and f.n > 0 then
+            if not tex then
+                tex = plot:CreateTexture(nil, "BACKGROUND", nil, 1)
+                bossShades[i] = tex
+            end
+            tex:ClearAllPoints()
+            tex:SetPoint("TOPLEFT", plot, "TOPLEFT", boss.start / f.n * width, 0)
+            tex:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", boss.start / f.n * width, 0)
+            tex:SetWidth(math.max(1, (boss.stop - boss.start) / f.n * width))
+            local c = boss.kill and C.accent or C.danger
+            tex:SetColorTexture(c[1], c[2], c[3], 0.12)
+            tex:Show()
+        elseif tex then
+            tex:Hide()
+        end
+    end
+end
+
+local function SpecClass(specID)
+    local SI = C_SpecializationInfo
+    local ok, classID = pcall(SI.GetClassIDFromSpecID, specID)
+    if not (ok and type(classID) == "number") then return nil end
+    local _, file = GetClassInfo(classID)
+    return file
+end
+
+local function NumberList(list)
+    local out, i = {}, 0
+    for v in (list .. ","):gmatch("([^,]*),") do
+        i = i + 1
+        out[i] = tonumber(v) or 0
+    end
+    return out, i
+end
+
+local function Running(per, n)
+    local out, sum = {}, 0
+    for i = 1, n do
+        sum = sum + (per[i] or 0)
+        out[i] = sum
+    end
+    return out
+end
+
+-- Parse an export string into a fight. Returns fight or nil, message.
+local function ParseKey(text)
+    if type(text) ~= "string" or text:sub(1, 5) ~= "DRK1~" then
+        return nil, "That isn't a key export -- it should start with DRK1~."
+    end
+    local f = { imported = true, players = {}, ambiguous = {}, bosses = {}, n = 0 }
+    local byIndex = {}
+    local me = UnitName("player")
+    for rec in text:gmatch("[^~]+") do
+        local kind, rest = rec:match("^(%u)%^(.*)$")
+        if kind == "K" then
+            local name, level, secs, success, when = strsplit("^", rest)
+            f.zone = (name or "?") .. " +" .. (level or "?") .. (success == "1" and "" or " (depleted)")
+            f.n = tonumber(secs) or 0
+            f.duration = f.n
+            f.clock = when or "?"
+        elseif kind == "P" then
+            local idx, name, spec = strsplit("^", rest)
+            local short = (name or "?"):match("^([^%-]+)") or name
+            local key = (short == me) and "you" or ("imported" .. (idx or "?"))
+            local p = { key = key, name = name, class = SpecClass(tonumber(spec)) }
+            f.players[key] = p
+            byIndex[idx] = p
+        elseif kind == "B" then
+            local name, s, e, kill = strsplit("^", rest)
+            f.bosses[#f.bosses + 1] = { name = name, start = tonumber(s) or 0, stop = tonumber(e) or 0, kill = kill == "1" }
+        elseif kind == "D" or kind == "H" then
+            local idx, list = rest:match("^(%d+)%^(.*)$")
+            local p = idx and byIndex[idx]
+            if p then
+                local per = NumberList(list)
+                if kind == "D" then p.dps = per else p.hps = per end
+            end
+        end
+    end
+    if f.n == 0 or not next(f.players) then return nil, "The export looks empty or cut short." end
+    for _, p in pairs(f.players) do
+        p.dps, p.hps = p.dps or {}, p.hps or {}
+        p.dmg, p.heal = Running(p.dps, f.n), Running(p.hps, f.n)
+    end
+    return f
+end
+
+local pasteBox
+
+local function OpenImport()
+    if not pasteBox then
+        pasteBox = CreateFrame("Frame", nil, win, "BackdropTemplate")
+        pasteBox:SetSize(380, 112)
+        pasteBox:SetPoint("CENTER", win, "CENTER")
+        pasteBox:SetFrameLevel(win:GetFrameLevel() + 20)
+        pasteBox:EnableMouse(true)
+        ns.ApplyBackdrop(pasteBox)
+
+        local head = pasteBox:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        head:SetPoint("TOPLEFT", 10, -10)
+        head:SetText("Import a key")
+        head:SetTextColor(Rgb(C.accent))
+
+        local help = pasteBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        help:SetPoint("TOPLEFT", head, "BOTTOMLEFT", 0, -6)
+        help:SetPoint("RIGHT", -10, 0)
+        help:SetJustifyH("LEFT")
+        help:SetText("Run Export Last Key in DPSReport\\Tools, then press Ctrl+V here.")
+
+        local box = CreateFrame("EditBox", nil, pasteBox, "BackdropTemplate")
+        box:SetHeight(22)
+        box:SetPoint("TOPLEFT", help, "BOTTOMLEFT", 0, -8)
+        box:SetPoint("RIGHT", -10, 0)
+        ns.ApplyBackdrop(box, C.control, C.border)
+        box:SetFontObject(GameFontHighlightSmall)
+        box:SetTextInsets(6, 6, 0, 0)
+        box:SetAutoFocus(false)
+        box:SetMaxLetters(0)
+        pasteBox.box = box
+
+        local status = pasteBox:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        status:SetPoint("TOPLEFT", box, "BOTTOMLEFT", 0, -6)
+        status:SetPoint("RIGHT", -10, 0)
+        status:SetJustifyH("LEFT")
+        pasteBox.status = status
+
+        box:SetScript("OnEscapePressed", function() pasteBox:Hide() end)
+        -- A paste arrives as ONE change: read it, clear the box, import.
+        box:SetScript("OnTextChanged", function(self, userInput)
+            if not userInput then return end
+            local text = self:GetText()
+            if text == "" then return end
+            self:SetText("")
+            local fight, err = ParseKey(text)
+            if not fight then
+                status:SetText("|cffff6060" .. err .. "|r")
+                return
+            end
+            fights[#fights + 1] = fight
+            while #fights > MAX_FIGHTS do table.remove(fights, 1) end
+            view.fight, view.zoom = #fights, 1
+            pasteBox:Hide()
+            print("|cff00ccff[DPSReport]|r Imported " .. fight.zone .. ".")
+            Graph.Render()
+        end)
+
+        local close = TextButton(pasteBox, "X", function() pasteBox:Hide() end)
+        close:SetPoint("TOPRIGHT", -4, -4)
+    end
+    pasteBox.status:SetText("")
+    pasteBox.box:SetText("")
+    pasteBox:Show()
+    pasteBox.box:SetFocus()
+end
+Graph.OpenImport = OpenImport
+Graph.ParseKey = ParseKey   -- exposed for testing outside the game
+
+TextButton = function(parent, label, onClick)
     local b = CreateFrame("Button", nil, parent)
     b.text = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     b.text:SetPoint("CENTER")
@@ -387,6 +604,7 @@ local function Build()
     if win then return end
     local db = GraphDB()
     view.metric = db.metric or view.metric
+    view.smooth = db.smooth or view.smooth
 
     win = CreateFrame("Frame", "DPSReportGraphFrame", UIParent, "BackdropTemplate")
     win:SetSize(db.w or 520, db.h or 260)
@@ -439,6 +657,10 @@ local function Build()
         prev = b
     end
 
+    -- Import a key exported from the combat log (Tools\DPSReportKeyExport.ps1).
+    local import = TextButton(title, "Import", OpenImport)
+    import:SetPoint("LEFT", name, "RIGHT", 12, 0)
+
     -- Fight selector, under the title.
     local bar2 = CreateFrame("Frame", nil, win)
     bar2:SetHeight(20)
@@ -466,6 +688,20 @@ local function Build()
     local zoomLabel = bar2:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     zoomLabel:SetPoint("RIGHT", zoomOut, "LEFT", -2, 0)
     zoomLabel:SetText("Range")
+
+    -- Smoothing for imported keys (their per-second values are real and
+    -- spiky); the live graph's values are the game's running averages already.
+    local smooth
+    smooth = TextButton(bar2, "", function()
+        view.smooth = view.smooth == 1 and 3 or (view.smooth == 3 and 5 or 1)
+        GraphDB().smooth = view.smooth
+        smooth.text:SetText("Avg " .. view.smooth .. "s")
+        Graph.Render()
+    end)
+    smooth.text:SetText("Avg " .. view.smooth .. "s")
+    smooth:SetWidth(46)
+    smooth:SetPoint("RIGHT", zoomLabel, "LEFT", -8, 0)
+    zoomLabel = smooth   -- the player button stops short of it
 
     playerBtn = TextButton(bar2, "", function(_, button)
         local f = ShownFight()

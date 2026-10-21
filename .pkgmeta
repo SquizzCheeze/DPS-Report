@@ -20,6 +20,7 @@ manual-changelog:
 # LICENSE and changelog.txt are deliberately NOT here: the MIT licence has to
 # travel with the code, and the changelog is worth having offline.
 ignore:
+  - Tools
   - .claude
   - .github
   - .vscode
