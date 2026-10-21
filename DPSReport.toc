@@ -14,3 +14,4 @@
 ## AddonCompartmentFuncOnLeave: DPSReport_OnAddonCompartmentLeave
 
 DPSReport.lua
+DPSReport_Probe.lua

@@ -30,6 +30,28 @@ A `.luarc.json` configures the Lua language server (Lua 5.1 runtime, matching Wo
 
 `/dps` (defined via `SLASH_DPSREPORT1`) is the only slash command, and it **ignores its arguments** — the handler just calls `DPSReport_OpenOptionsPanel()`. Earlier revisions of this file and of the header comment in `DPSReport.lua` documented an argument surface (`dps`, `hps`, `overall`, `whisper <name>`, …) that was never implemented; `/dpsreport` was never registered either. Reporting happens through the meter windows, the quick-report widget, and the end-of-dungeon auto-announce.
 
+### `/dpsprobe` -- a TEMPORARY diagnostic (2026-10-21)
+
+`DPSReport_Probe.lua` (its own file and `.toc` line, so the main file is untouched). It measures two
+wishlist ideas taken from the Forever addon "Rival" before anything is built on them. Unlisted --
+`/dps` still ignores arguments.
+
+1. **Threat:** for each group member against the target, is each of
+   `UnitDetailedThreatSituation`'s five returns, `UnitThreatPercentageOfLead` and
+   `UnitThreatSituation(unit, "target")` plain, secret or nil? Does a secret percentage still draw
+   through `StatusBar:SetValue` and `SetFormattedText`? As a control it samples
+   `UnitThreatSituation(unit)`, the call SquizzFrames' aggro border makes, which the user has seen
+   working in keys and raids.
+2. **Graph samples:** every second in combat it reads the Current DamageDone session (session,
+   totals, duration, `GetSessionDurationSeconds`, the first five sources) and keeps up to 40 raw
+   values. At +0.5s, +3s and +10s after combat it tests those STORED values for secret, `tostring`
+   and arithmetic.
+
+Counts are saved in `DPSReportDB.probe`, bucketed by `C_RestrictedActions` restriction plus
+instance type. Commands: `on | off | report | clear`; it stays on across reloads. Remove the file
+and its `.toc` line once answered. Tests 3 (addon messages) and 4 (`SetTradeMoney`) were
+deliberately NOT built (user decision).
+
 ## Architecture
 
 The file is organized top-to-bottom into sections separated by `-- ====...====` banners. Reading it roughly in order:
