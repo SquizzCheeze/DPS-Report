@@ -52,7 +52,7 @@ Built on what `/dpsprobe` measured:
 - **Limits:** no per-second deltas, peaks or smoothing, because there is no arithmetic on
   secrets. DPS is the game's running `amountPerSecond`.
 
-**Key import (proof of concept, 2026-10-21, untested in game).** `Tools/DPSReportKeyExport.ps1`
+**Key import (proof of concept, 2026-10-21, CONFIRMED working in game by the user the same day).** `Tools/DPSReportKeyExport.ps1`
 (launched by `Tools/Export Last Key.cmd`; `Tools` is in the `.pkgmeta` ignore list, so it does not
 ship). It is PowerShell 5.1 with an inline C# 5 parser (`Add-Type` — no newer C# syntax). It finds
 the last `CHALLENGE_MODE_START` that has a `CHALLENGE_MODE_END` after it, newest log first; 56 MB
