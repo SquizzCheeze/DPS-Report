@@ -190,8 +190,9 @@ local Graph = {}
 ns.Graph = Graph
 
 local win, plot, bars, hoverText, maxText, startText, endText, emptyText
+local ghosts, compareText = {}, nil   -- the comparison run's bars, and its summary line
 local fightLabel, playerBtn, metricBtns = nil, nil, {}
-local view = { fight = nil, player = "you", metric = "dps", zoom = 1, smooth = 3 }
+local view = { fight = nil, player = "you", metric = "dps", zoom = 1, smooth = 3, compare = nil }
 local TextButton   -- defined with the window; used by the import box above it
 
 local function GraphDB()
@@ -274,6 +275,8 @@ function Graph.Render()
         playerBtn.text:SetText("")
         emptyText:Show()
         for _, b in ipairs(bars) do b:Hide() end
+        for _, b in ipairs(ghosts) do b:Hide() end
+        if compareText then compareText:SetText("") end
         maxText:SetText("") startText:SetText("") endText:SetText("")
         return
     end
@@ -294,29 +297,32 @@ function Graph.Render()
     local values = p and p[m.key] or {}
     local width = plot:GetWidth()
     local height = plot:GetHeight()
+
+    -- Comparing: only between two imported fights, sharing one time axis.
+    local cf = f.imported and view.compare ~= f and view.compare or nil
+    local cp = cf and Graph.ComparePlayer(cf, p)
     local n = f.n
+    if cf then n = math.max(f.n, cf.n) end
     local cols = math.max(1, math.min(n, math.floor(width / MIN_COLUMN)))
     local colW = width / cols
 
     -- What each bar shows, and the top of the axis.
     local colValue, colSample, top = {}, {}, nil
+    local cmpValue = {}
     if f.imported then
         -- Imported values are plain: smooth them, bucket them, scale to fit.
-        local series = Graph.Smoothed(values, n, m.rate and view.smooth or 1)
+        local window = m.rate and view.smooth or 1
+        local series = Graph.Smoothed(values, f.n, window)
+        local cseries = cp and Graph.Smoothed(cp[m.key] or {}, cf.n, window)
         local peak = 0
         for i = 1, cols do
-            local from = math.floor((i - 1) * n / cols) + 1
-            local to = math.max(from, math.floor(i * n / cols))
-            local v
-            if m.rate then
-                local sum = 0
-                for s = from, to do sum = sum + (series[s] or 0) end
-                v = sum / (to - from + 1)
-            else
-                v = series[to] or 0
+            local from, to = Graph.Bucket(i, cols, n)
+            colValue[i], colSample[i] = Graph.BucketValue(series, from, to, f.n, m.rate), from
+            if colValue[i] > peak then peak = colValue[i] end
+            if cseries then
+                cmpValue[i] = Graph.BucketValue(cseries, from, to, cf.n, m.rate)
+                if cmpValue[i] > peak then peak = cmpValue[i] end
             end
-            colValue[i], colSample[i] = v, from
-            if v > peak then peak = v end
         end
         top = math.max(1, peak * 1.05 / view.zoom)
     else
@@ -329,33 +335,51 @@ function Graph.Render()
     end
     maxText:SetText(AbbreviateNumbers(top))
     startText:SetText("0:00")
-    endText:SetText(Clock(f.n * SAMPLE_INTERVAL))
-    Graph.DrawBosses(f, width)
+    endText:SetText(Clock(n * SAMPLE_INTERVAL))
+    Graph.DrawBosses(f, width, n)
+    Graph.CompareSummary(f, p, cf, cp, m)
 
     local r, g, b = Rgb(C.accent)
     local cc = p and p.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[p.class]
     if cc then r, g, b = cc.r, cc.g, cc.b end
 
+    -- Comparing: this run's bar on the left half of each column, the other
+    -- run's in grey on the right half.
+    local barW = cf and math.max(1, (colW - 1) / 2) or math.max(1, colW - 1)
     for i = 1, math.max(cols, #bars) do
-        local bar = bars[i]
+        local bar, ghost = bars[i], ghosts[i]
         if i <= cols then
             if not bar then
-                bar = CreateFrame("StatusBar", nil, plot)
-                bar:SetOrientation("VERTICAL")
-                bar:SetStatusBarTexture("Interface\\BUTTONS\\WHITE8X8")
+                bar = Graph.NewBar()
                 bars[i] = bar
             end
             bar:ClearAllPoints()
             bar:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", (i - 1) * colW, 0)
-            bar:SetSize(math.max(1, colW - 1), height)
+            bar:SetSize(barW, height)
             bar:SetStatusBarColor(r, g, b, 0.85)
             bar:SetMinMaxValues(0, top)
             local v = colValue[i]
-            bar.sample, bar.value = colSample[i], v
+            bar.sample, bar.value, bar.compare = colSample[i], v, cmpValue[i]
             if Has(v) then bar:SetValue(v) else bar:SetValue(0) end
             bar:Show()
-        elseif bar then
-            bar:Hide()
+            if cf then
+                if not ghost then
+                    ghost = Graph.NewBar()
+                    ghosts[i] = ghost
+                end
+                ghost:ClearAllPoints()
+                ghost:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", (i - 1) * colW + barW, 0)
+                ghost:SetSize(barW, height)
+                ghost:SetStatusBarColor(0.75, 0.75, 0.75, 0.6)
+                ghost:SetMinMaxValues(0, top)
+                ghost:SetValue(cmpValue[i] or 0)
+                ghost:Show()
+            elseif ghost then
+                ghost:Hide()
+            end
+        else
+            if bar then bar:Hide() end
+            if ghost then ghost:Hide() end
         end
     end
     Graph.cols, Graph.colW = cols, colW
@@ -393,7 +417,12 @@ local function UpdateHover(_, elapsed)
     end
     if Has(v) then
         local opts = m.rate and ns.AbbrevPS or ns.AbbrevTotal
-        hoverText:SetFormattedText("%s   %s %s", when, m.label, AbbreviateNumbers(v, opts))
+        if bar.compare then
+            hoverText:SetFormattedText("%s   %s %s   |cffbbbbbbvs %s|r", when, m.label,
+                AbbreviateNumbers(v, opts), AbbreviateNumbers(bar.compare, opts))
+        else
+            hoverText:SetFormattedText("%s   %s %s", when, m.label, AbbreviateNumbers(v, opts))
+        end
     else
         hoverText:SetFormattedText("%s   no reading", when)
     end
@@ -418,20 +447,22 @@ end
 
 local bossShades = {}
 
--- Boss pulls shaded behind the bars (imported keys only).
-function Graph.DrawBosses(f, width)
+-- Boss pulls shaded behind the bars (imported keys only). `span` is the time
+-- axis in seconds: the fight's own length, or longer while comparing.
+function Graph.DrawBosses(f, width, span)
+    span = span or f.n
     local list = f.imported and f.bosses or {}
     for i = 1, math.max(#list, #bossShades) do
         local boss, tex = list[i], bossShades[i]
-        if boss and f.n > 0 then
+        if boss and span > 0 then
             if not tex then
                 tex = plot:CreateTexture(nil, "BACKGROUND", nil, 1)
                 bossShades[i] = tex
             end
             tex:ClearAllPoints()
-            tex:SetPoint("TOPLEFT", plot, "TOPLEFT", boss.start / f.n * width, 0)
-            tex:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", boss.start / f.n * width, 0)
-            tex:SetWidth(math.max(1, (boss.stop - boss.start) / f.n * width))
+            tex:SetPoint("TOPLEFT", plot, "TOPLEFT", boss.start / span * width, 0)
+            tex:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", boss.start / span * width, 0)
+            tex:SetWidth(math.max(1, (boss.stop - boss.start) / span * width))
             local c = boss.kill and C.accent or C.danger
             tex:SetColorTexture(c[1], c[2], c[3], 0.12)
             tex:Show()
@@ -439,6 +470,74 @@ function Graph.DrawBosses(f, width)
             tex:Hide()
         end
     end
+end
+
+-- One graph bar: a vertical StatusBar the game fills.
+function Graph.NewBar()
+    local bar = CreateFrame("StatusBar", nil, plot)
+    bar:SetOrientation("VERTICAL")
+    bar:SetStatusBarTexture("Interface\\BUTTONS\\WHITE8X8")
+    return bar
+end
+
+-- Seconds covered by column i of `cols` across a `span`-second axis.
+function Graph.Bucket(i, cols, span)
+    local from = math.floor((i - 1) * span / cols) + 1
+    local to = math.max(from, math.floor(i * span / cols))
+    return from, to
+end
+
+-- A column's value from a plain series of length n: the average of a rate,
+-- or where a running total stands at the column's end (held at its final
+-- value once that run is over, so a shorter run ends flat, not at zero).
+function Graph.BucketValue(series, from, to, n, rate)
+    if rate then
+        if from > n then return 0 end
+        local sum, count = 0, 0
+        for s = from, math.min(to, n) do
+            sum, count = sum + (series[s] or 0), count + 1
+        end
+        return count > 0 and sum / count or 0
+    end
+    return series[math.min(to, n)] or 0
+end
+
+local function ShortName(name)
+    return type(name) == "string" and (name:match("^([^%-]+)") or name) or nil
+end
+
+-- The same player in the comparison run: "you" to "you", else by name.
+function Graph.ComparePlayer(cf, p)
+    if not (cf and p) then return nil end
+    if p.key == "you" and cf.players.you then return cf.players.you end
+    local want = ShortName(p.name)
+    for _, cp in pairs(cf.players) do
+        if want and ShortName(cp.name) == want then return cp end
+    end
+    return nil
+end
+
+-- "vs <run>: total A vs B (+x%) . average A vs B" over the plot.
+function Graph.CompareSummary(f, p, cf, cp, m)
+    if not compareText then return end
+    if not cf then
+        compareText:SetText("")
+        return
+    end
+    local label = (cf.clock or "?") .. "  " .. (cf.zone or "")
+    if not (p and cp) then
+        compareText:SetText("|cffbbbbbbvs " .. label .. "|r  -- " .. (PlayerLabel(p)) .. " isn't in that run")
+        return
+    end
+    local key = m.meter == "damage" and "dmg" or "heal"
+    local a, b = p[key] and p[key][f.n] or 0, cp[key] and cp[key][cf.n] or 0
+    local change = b > 0 and string.format(" (%s%.1f%%)", a >= b and "+" or "", (a - b) / b * 100) or ""
+    local rateA, rateB = f.n > 0 and a / f.n or 0, cf.n > 0 and b / cf.n or 0
+    local colour = a >= b and "|cff40ff40" or "|cffff6060"
+    compareText:SetText(string.format("|cffbbbbbbvs %s|r   %s %s vs %s%s|r   avg %s vs %s",
+        label, m.meter == "damage" and "Damage" or "Healing",
+        AbbreviateNumbers(a), AbbreviateNumbers(b), colour .. change,
+        AbbreviateNumbers(rateA), AbbreviateNumbers(rateB)))
 end
 
 local function SpecClass(specID)
@@ -510,6 +609,157 @@ local function ParseKey(text)
     return f
 end
 
+-----------------------------------------------------------------------
+-- Saved keys: imports kept across reloads
+-----------------------------------------------------------------------
+--
+-- Imported values are plain, so unlike live fights they CAN be saved. Each
+-- import is kept per character in DPSReportCharDB.importedKeys as the raw
+-- export text (~60 KB), and only parsed when opened. Its id is the export's
+-- K record (dungeon, level, length, result, start time), so importing the
+-- same key again replaces it instead of adding a copy. The newest
+-- MAX_SAVED_KEYS are kept, plus any pinned, which are never trimmed.
+
+local MAX_SAVED_KEYS = 20
+
+local function SavedStore()
+    if type(DPSReportCharDB) ~= "table" then return nil end
+    DPSReportCharDB.importedKeys = DPSReportCharDB.importedKeys or {}
+    return DPSReportCharDB.importedKeys
+end
+
+local function KeyId(text)
+    return type(text) == "string" and text:match("^DRK1~(K%^[^~]*)") or nil
+end
+
+local function SaveImport(text, f)
+    local store = SavedStore()
+    local id = KeyId(text)
+    if not (store and id) then return end
+    f.savedId = id
+    for _, e in ipairs(store) do
+        if e.id == id then
+            e.text, e.saved = text, time()
+            return
+        end
+    end
+    store[#store + 1] = { id = id, text = text, saved = time(), zone = f.zone, clock = f.clock, seconds = f.n }
+    local unpinned = 0
+    for _, e in ipairs(store) do if not e.pinned then unpinned = unpinned + 1 end end
+    local i = 1
+    while unpinned > MAX_SAVED_KEYS and i <= #store do
+        if not store[i].pinned then
+            table.remove(store, i)
+            unpinned = unpinned - 1
+        else
+            i = i + 1
+        end
+    end
+end
+
+-- Put a fight in this session's list (or find it there) and show it.
+local function ShowFight(f)
+    for i, existing in ipairs(fights) do
+        if f.savedId and existing.savedId == f.savedId then
+            view.fight, view.zoom = i, 1
+            Graph.Render()
+            return existing
+        end
+    end
+    fights[#fights + 1] = f
+    while #fights > MAX_FIGHTS do table.remove(fights, 1) end
+    view.fight, view.zoom = #fights, 1
+    Graph.Render()
+    return f
+end
+
+-- A saved key, as a fight: the copy already open this session, else parsed.
+local function LoadSaved(e)
+    for _, f in ipairs(fights) do
+        if f.savedId == e.id then return f end
+    end
+    local f, err = ParseKey(e.text)
+    if not f then
+        print("|cff00ccff[DPSReport]|r Couldn't open that saved key: " .. tostring(err))
+        return nil
+    end
+    f.savedId = e.id
+    return f
+end
+Graph.LoadSaved = LoadSaved
+
+local function OpenSaved(e)
+    local f = LoadSaved(e)
+    if f then ShowFight(f) end
+end
+
+local function DeleteSaved(e)
+    local store = SavedStore()
+    for i = #(store or {}), 1, -1 do
+        if store[i] == e then table.remove(store, i) end
+    end
+end
+
+-- Newest first.
+local function SavedList()
+    local list = {}
+    for _, e in ipairs(SavedStore() or {}) do list[#list + 1] = e end
+    table.sort(list, function(a, b) return (a.saved or 0) > (b.saved or 0) end)
+    return list
+end
+Graph.SavedList = SavedList
+
+local function SavedLabel(e)
+    return string.format("%s%s  %s  %s", e.pinned and "|cffffd100*|r " or "", e.clock or "?",
+        e.zone or "?", Clock(e.seconds or 0))
+end
+Graph.SavedLabel = SavedLabel
+
+-- The Keys menu: every saved key, each with Open / Keep / Delete.
+-- The Compare menu: any other saved key, drawn beside the one on screen.
+local function OpenCompareMenu(owner)
+    if not (MenuUtil and MenuUtil.CreateContextMenu) then return end
+    local shown = view.fight and fights[view.fight] or fights[#fights]
+    MenuUtil.CreateContextMenu(owner, function(_, root)
+        if not (shown and shown.imported) then
+            root:CreateTitle("Open an imported key first (Import or Keys).")
+            return
+        end
+        root:CreateTitle("Compare with")
+        root:CreateButton(view.compare and "None (stop comparing)" or "|cff888888None|r", function()
+            view.compare = nil
+            Graph.Render()
+        end)
+        for _, e in ipairs(SavedList()) do
+            if e.id ~= shown.savedId then
+                root:CreateButton(SavedLabel(e), function()
+                    view.compare = LoadSaved(e)
+                    Graph.Render()
+                end)
+            end
+        end
+    end)
+end
+
+local function OpenKeysMenu(owner)
+    if not (MenuUtil and MenuUtil.CreateContextMenu) then
+        print("|cff00ccff[DPSReport]|r The saved keys menu needs the game's menu system, which isn't available.")
+        return
+    end
+    MenuUtil.CreateContextMenu(owner, function(_, root)
+        local list = SavedList()
+        root:CreateTitle(#list == 0 and "No saved keys yet -- use Import." or "Saved keys")
+        for _, e in ipairs(list) do
+            local item = root:CreateButton(SavedLabel(e), function() OpenSaved(e) end)
+            item:CreateButton("Open", function() OpenSaved(e) end)
+            item:CreateButton(e.pinned and "Unpin (can be trimmed)" or "Keep forever (pin)", function()
+                e.pinned = not e.pinned
+            end)
+            item:CreateButton("|cffff6060Delete|r", function() DeleteSaved(e) end)
+        end
+    end)
+end
+
 local pasteBox
 
 local function OpenImport()
@@ -561,12 +811,10 @@ local function OpenImport()
                 status:SetText("|cffff6060" .. err .. "|r")
                 return
             end
-            fights[#fights + 1] = fight
-            while #fights > MAX_FIGHTS do table.remove(fights, 1) end
-            view.fight, view.zoom = #fights, 1
+            SaveImport(text, fight)
             pasteBox:Hide()
-            print("|cff00ccff[DPSReport]|r Imported " .. fight.zone .. ".")
-            Graph.Render()
+            print("|cff00ccff[DPSReport]|r Imported and saved " .. fight.zone .. ".")
+            ShowFight(fight)
         end)
 
         local close = TextButton(pasteBox, "X", function() pasteBox:Hide() end)
@@ -617,7 +865,7 @@ local function Build()
     win:SetClampedToScreen(true)
     win:SetMovable(true)
     win:SetResizable(true)
-    if win.SetResizeBounds then win:SetResizeBounds(360, 180, 1400, 800) end
+    if win.SetResizeBounds then win:SetResizeBounds(480, 200, 1400, 800) end
     win:EnableMouse(true)
     ns.ApplyBackdrop(win)
     tinsert(UISpecialFrames, "DPSReportGraphFrame")
@@ -660,6 +908,14 @@ local function Build()
     -- Import a key exported from the combat log (Tools\DPSReportKeyExport.ps1).
     local import = TextButton(title, "Import", OpenImport)
     import:SetPoint("LEFT", name, "RIGHT", 12, 0)
+    -- Saved imports, kept across reloads.
+    local keys
+    keys = TextButton(title, "Keys", function() OpenKeysMenu(keys) end)
+    keys:SetPoint("LEFT", import, "RIGHT", 2, 0)
+    -- Another saved key beside this one.
+    local compare
+    compare = TextButton(title, "Compare", function() OpenCompareMenu(compare) end)
+    compare:SetPoint("LEFT", keys, "RIGHT", 2, 0)
 
     -- Fight selector, under the title.
     local bar2 = CreateFrame("Frame", nil, win)
@@ -724,7 +980,14 @@ local function Build()
 
     -- The plot, and its labels.
     plot = CreateFrame("Frame", nil, win, "BackdropTemplate")
-    plot:SetPoint("TOPLEFT", bar2, "BOTTOMLEFT", 40, -6)
+    -- The comparison summary sits between the controls and the plot.
+    compareText = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    compareText:SetPoint("TOPLEFT", bar2, "BOTTOMLEFT", 2, -3)
+    compareText:SetPoint("RIGHT", win, "RIGHT", -10, 0)
+    compareText:SetJustifyH("LEFT")
+    compareText:SetWordWrap(false)
+
+    plot:SetPoint("TOPLEFT", bar2, "BOTTOMLEFT", 40, -20)
     plot:SetPoint("BOTTOMRIGHT", win, "BOTTOMRIGHT", -10, 38)
     plot:SetBackdrop({ bgFile = "Interface\\BUTTONS\\WHITE8X8" })
     plot:SetBackdropColor(0, 0, 0, 0.25)
