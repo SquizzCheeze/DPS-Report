@@ -75,7 +75,7 @@ export. An imported fight has `f.imported`: its values are plain, so `Render` sm
 Avg 1/3/5s), buckets, auto-scales, and shades boss pulls (`Graph.DrawBosses`). The hover names the
 boss. The local player's row becomes `"you"` by short name.
 
-**Threat meter (`DPSReport_Threat.lua`, 2026-10-22, untested in game).** Opened from the "T" button
+**Threat meter (`DPSReport_Threat.lua`, 2026-10-22, CONFIRMED working in game by the user in a follower dungeon).** Opened from the "T" button
 (left of "G") or `/dpsthreat`. Built on the `/dpsprobe` result: threat is plain for players and
 pets in combat, dungeon Encounter and ChallengeMode (raids unmeasured).
 
