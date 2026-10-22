@@ -1,8 +1,9 @@
 -- DPSReport_History.lua -- fight history, comparing fights, personal bests
 -- (2026-10-22).
 --
--- Every fight's END totals, read from C_DamageMeter's Current session just
--- after combat -- when they are plain (/dpsprobe: everything is secret DURING
+-- Each boss pull's END totals, read from that fight's own C_DamageMeter
+-- session (by ID) just after combat, and each Mythic+ run's from the Overall
+-- session -- when they are plain (/dpsprobe: everything is secret DURING
 -- combat, plain after). Kept per character in DPSReportCharDB.fightHistory,
 -- newest MAX_FIGHTS. No per-second data: that is the graph's job, and the
 -- live per-second values can never be saved anyway.
@@ -96,12 +97,17 @@ local METERS = {
     { field = "i", type = "Interrupts" },
 }
 
--- Read the finished fight's totals; nil while the session is still secret.
-local function ReadTotals()
+-- Read a session's totals as {name = row}; nil while it is still secret.
+-- `which` is a sessionID when byID, else an Enum.DamageMeterSessionType.
+local function ReadTotals(which, byID)
     local players, any = {}, false
     for _, m in ipairs(METERS) do
-        local ok, s = pcall(C_DamageMeter.GetCombatSessionFromType,
-            Enum.DamageMeterSessionType.Current, Enum.DamageMeterType[m.type])
+        local ok, s
+        if byID then
+            ok, s = pcall(C_DamageMeter.GetCombatSessionFromID, which, Enum.DamageMeterType[m.type])
+        else
+            ok, s = pcall(C_DamageMeter.GetCombatSessionFromType, which, Enum.DamageMeterType[m.type])
+        end
         if ok and type(s) == "table" and not IsSecret(s) and type(s.combatSources) == "table" then
             for _, e in ipairs(s.combatSources) do
                 local name, total = Plain(e.name), Plain(e.totalAmount)
@@ -118,17 +124,41 @@ local function ReadTotals()
                 end
             end
         elseif ok and type(s) == "table" and (IsSecret(s) or IsSecret(s.combatSources)) then
-            return nil   -- still restricted: Finalise retries
+            return nil   -- still restricted: the caller retries
         end
     end
     if not any then return nil end
+    return players
+end
+
+local function Sorted(players)
     local list = {}
     for _, p in pairs(players) do list[#list + 1] = p end
     table.sort(list, function(a, b) return a.d > b.d end)
     return list
 end
 
-local function CheckBest(f)
+-- The game's own session for a fight that has just ended: the newest one no
+-- longer than the fight itself. Reading "Current" instead went wrong two ways
+-- (user report 2026-10-22): a retry that ran after the NEXT pull had begun
+-- read that pull, and a boss kill that ended a key read the key's whole-run
+-- session (Zul'jan was saved as a 27-minute kill).
+local function FightSession(wall, maxID)
+    local ok, list = pcall(C_DamageMeter.GetAvailableCombatSessions)
+    if not ok or type(list) ~= "table" then return nil end
+    local best, bestDur
+    for _, s in ipairs(list) do
+        local id, d = Plain(s.sessionID), Plain(s.durationSeconds)
+        if type(id) == "number" and type(d) == "number" and d > 0 and d <= wall + 5
+            and (not maxID or id <= maxID)
+            and (not best or id > best) then
+            best, bestDur = id, d
+        end
+    end
+    return best, bestDur
+end
+
+local function CheckBest(f, quiet)
     local e = f.encounter
     if not (e and e.success and e.id) then return end
     local me
@@ -145,7 +175,9 @@ local function CheckBest(f)
     end
     b.kills = (b.kills or 0) + 1
     if dps > (b.dps or 0) then
-        print(PREFIX .. string.format("New personal best on %s: %s DPS (was %s).", b.name, Abbrev(dps), Abbrev(b.dps)))
+        if not quiet then
+            print(PREFIX .. string.format("New personal best on %s: %s DPS (was %s).", b.name, Abbrev(dps), Abbrev(b.dps)))
+        end
         b.dps, b.dpsWhen = dps, f.when
     end
     if me.d > (b.total or 0) then b.total, b.totalWhen = me.d, f.when end
@@ -159,48 +191,42 @@ local function Save(f)
     if ns.History.OnNewFight then ns.History.OnNewFight() end
 end
 
--- A WHOLE Mythic+ run: every fight in the key added up, trash included, so
--- the run's totals exist even though only its boss pulls are kept on their
--- own. Opened at CHALLENGE_MODE_START, saved once the key is complete AND its
--- last fight has been counted; an abandoned key is simply dropped.
+-- A WHOLE Mythic+ run, read from the game's Overall session: the same numbers
+-- as the meter's Overall. It used to add up every fight in the key, which
+-- counted chain pulls twice (994M against the meter's 466M, user report
+-- 2026-10-22). The Overall at the key's start is subtracted, so it is right
+-- whether or not the meter resets on a new key. DPS is over COMBAT time, as
+-- the meter shows it; the key's timer is kept as well (`keyTime`) and shown.
 local run
-local pending = 0       -- fights still waiting for their totals
-
-local function AddToRun(list)
-    if not run then return end
-    for _, p in ipairs(list) do
-        local r = run.players[p.n]
-        if not r then
-            r = { n = p.n, c = p.c, d = 0, h = 0, i = 0 }
-            run.players[p.n] = r
-        end
-        if p.me then r.me = true end
-        r.d, r.h, r.i = r.d + p.d, r.h + p.h, r.i + p.i
-    end
-end
+local pending = 0       -- boss pulls still waiting for their totals
 
 local function CloseRun(tries)
     if not (run and run.completed) then return end
-    -- Wait for the key's last fight to be counted.
-    if (current or pending > 0) and tries < 15 then
-        C_Timer.After(2, function() CloseRun(tries + 1) end)
+    -- Wait for the key's last fight to end and the session to turn plain.
+    local players = not (current or pending > 0) and ReadTotals(Enum.DamageMeterSessionType.Overall)
+    if not players then
+        if tries < 15 then C_Timer.After(2, function() CloseRun(tries + 1) end) end
         return
     end
     local r = run
     run = nil
-    local ok, info = pcall(C_ChallengeMode.GetChallengeCompletionInfo)
-    info = ok and type(info) == "table" and info or {}
-    local ms, onTime = Plain(info.time), Plain(info.onTime)
-    local duration = (type(ms) == "number" and ms > 0) and ms / 1000 or (GetTime() - r.started)
-    local list = {}
-    for _, p in pairs(r.players) do list[#list + 1] = p end
+    for name, p in pairs(players) do
+        local b = r.base and r.base[name]
+        if b then
+            p.d, p.h, p.i = math.max(0, p.d - b.d), math.max(0, p.h - b.h), math.max(0, p.i - b.i)
+        end
+        if p.d + p.h + p.i == 0 then players[name] = nil end
+    end
+    local list = Sorted(players)
     if #list == 0 then return end
-    table.sort(list, function(a, b) return a.d > b.d end)
+    local combat = ns.OverallDuration and Plain(ns.OverallDuration())
+    combat = type(combat) == "number" and combat - (r.baseDur or 0) or 0
+    local keyTime = r.keyTime or (GetTime() - r.started)
     Save({
-        kind = "run", when = r.when, zone = r.zone, keyLevel = r.level, onTime = onTime,
-        duration = duration, players = list,
+        kind = "run", v = 2, when = r.when, zone = r.zone, keyLevel = r.level, onTime = r.onTime,
+        duration = combat > 0 and combat or keyTime, keyTime = keyTime, players = list,
         name = string.format("%s +%d %s", r.zone or "?", r.level or 0,
-            onTime == true and "(timed)" or (onTime == false and "(over time)" or "")),
+            r.onTime == true and "(timed)" or (r.onTime == false and "(over time)" or "")),
     })
 end
 
@@ -209,13 +235,23 @@ local function OpenRun()
     mapID = ok and Plain(mapID)
     local name = mapID and C_ChallengeMode.GetMapUIInfo(mapID)
     local okL, level = pcall(C_ChallengeMode.GetActiveKeystoneInfo)
-    run = { when = time(), started = GetTime(), zone = Plain(name) or Context().zone,
-            level = okL and Plain(level) or 0, players = {} }
+    local r = { when = time(), started = GetTime(), zone = Plain(name) or Context().zone,
+                level = okL and Plain(level) or 0 }
+    run = r
+    -- The baseline, a moment later so the meter's own reset-on-key-start has
+    -- run first (its handler and ours fire in no fixed order).
+    C_Timer.After(1, function()
+        if run ~= r then return end
+        r.base = ReadTotals(Enum.DamageMeterSessionType.Overall) or {}
+        local d = ns.OverallDuration and Plain(ns.OverallDuration())
+        r.baseDur = type(d) == "number" and d or 0
+    end)
 end
 
 local function Finalise(f, tries)
-    local list = ReadTotals()
-    if not list then
+    if not f.sessionID then f.sessionID, f.sessionDur = FightSession(f.wall, f.maxSession) end
+    local players = f.sessionID and ReadTotals(f.sessionID, true)
+    if not players then
         if tries < 6 then
             C_Timer.After(1, function() Finalise(f, tries + 1) end)
         else
@@ -224,17 +260,42 @@ local function Finalise(f, tries)
         return
     end
     pending = pending - 1
-    local ok, dur = pcall(C_DamageMeter.GetSessionDurationSeconds, Enum.DamageMeterSessionType.Current)
-    dur = ok and Plain(dur)
-    f.duration = (type(dur) == "number" and dur > 0) and dur or f.wall
-    if f.inRun then AddToRun(list) end
-    -- Only boss pulls are kept on their own.
-    if not f.encounter or f.duration < MIN_SECONDS then return end
-    f.players = list
+    f.duration = f.sessionDur
+    f.sessionID, f.sessionDur, f.maxSession = nil, nil, nil
+    if f.duration < MIN_SECONDS then return end
+    f.players = Sorted(players)
     f.name = FightName(f)
-    f.inRun = nil
     Save(f)
     CheckBest(f)
+end
+
+-- One-time repair of what the old recording saved (2026-10-22): whole runs
+-- with every chain pull counted twice, and boss pulls that read the wrong
+-- session (longer than the fight itself). Both are dropped, and the personal
+-- bests, which started the same day, are rebuilt from what remains.
+local function Repair()
+    if type(DPSReportCharDB) ~= "table" or DPSReportCharDB.historyRepaired then return end
+    local history, bests = Store()
+    if not history then return end
+    DPSReportCharDB.historyRepaired = true
+    local dropped = 0
+    for i = #history, 1, -1 do
+        local f = history[i]
+        local bad = (f.kind == "run" and f.v ~= 2)
+            or (f.encounter and f.wall and f.duration and f.duration > f.wall + 5)
+        if bad then
+            table.remove(history, i)
+            dropped = dropped + 1
+        end
+    end
+    wipe(bests)
+    for _, f in ipairs(history) do
+        if f.encounter and f.players then CheckBest(f, true) end
+    end
+    if dropped > 0 then
+        print(PREFIX .. string.format("Fight history: removed %d %s recorded with wrong totals; personal bests rebuilt.",
+            dropped, dropped == 1 and "entry" or "entries"))
+    end
 end
 
 local ev = CreateFrame("Frame")
@@ -245,12 +306,21 @@ ev:RegisterEvent("ENCOUNTER_END")
 ev:RegisterEvent("CHALLENGE_MODE_START")
 ev:RegisterEvent("CHALLENGE_MODE_COMPLETED")
 ev:RegisterEvent("CHALLENGE_MODE_RESET")
+ev:RegisterEvent("PLAYER_LOGIN")
 ev:SetScript("OnEvent", function(_, event, a1, a2, a3, a4, a5)
-    if event == "CHALLENGE_MODE_START" then
+    if event == "PLAYER_LOGIN" then
+        Repair()
+    elseif event == "CHALLENGE_MODE_START" then
         OpenRun()
     elseif event == "CHALLENGE_MODE_COMPLETED" then
         if run then
             run.completed = true
+            -- Read now: the completion info clears within seconds.
+            local ok, info = pcall(C_ChallengeMode.GetChallengeCompletionInfo)
+            info = ok and type(info) == "table" and info or {}
+            local ms = Plain(info.time)
+            if type(ms) == "number" and ms > 0 then run.keyTime = ms / 1000 end
+            run.onTime = Plain(info.onTime)
             C_Timer.After(2, function() CloseRun(0) end)
         end
     elseif event == "CHALLENGE_MODE_RESET" then
@@ -266,15 +336,23 @@ ev:SetScript("OnEvent", function(_, event, a1, a2, a3, a4, a5)
     elseif event == "PLAYER_REGEN_DISABLED" then
         local ctx = Context()
         current = { when = time(), started = GetTime(), zone = ctx.zone, keyLevel = ctx.keyLevel,
-                    encounter = encounter, inRun = run ~= nil }
+                    encounter = encounter }
     elseif event == "PLAYER_REGEN_ENABLED" then
         local f = current
         current = nil
         if not f then return end
         f.wall = GetTime() - f.started
         f.started = nil
-        -- Trash outside a key is not kept and counts toward nothing.
-        if not (f.encounter or f.inRun) then return end
+        -- Only boss pulls are kept on their own (a whole key comes from the
+        -- Overall session, so its trash needs nothing here).
+        if not f.encounter then return end
+        -- The newest session that exists NOW: one a chained pull opens in
+        -- the next second must not be mistaken for this fight's.
+        local ok, list = pcall(C_DamageMeter.GetAvailableCombatSessions)
+        for _, s in ipairs(ok and type(list) == "table" and list or {}) do
+            local id = Plain(s.sessionID)
+            if type(id) == "number" and id > (f.maxSession or -1) then f.maxSession = id end
+        end
         pending = pending + 1
         C_Timer.After(1, function() Finalise(f, 0) end)
     end
@@ -369,7 +447,7 @@ local function RenderList()
             row.fight = f
             local dps = MyDps(f)
             row.text:SetText(string.format("%s  %s  |cff888888%s%s|r", date("%m/%d %H:%M", f.when), f.name or "?",
-                Clock(f.duration), dps and ("  " .. Abbrev(dps)) or ""))
+                Clock(f.keyTime or f.duration), dps and ("  " .. Abbrev(dps)) or ""))
             if f == state.selected then
                 local r, g, b = Rgb(C.accent)
                 row.bg:SetColorTexture(r, g, b, 0.25)
@@ -438,7 +516,7 @@ local function RenderFight()
         return
     end
     local cmp = state.compare
-    detail.sub:SetText(string.format("%s   %s   %s%s", date("%Y-%m-%d %H:%M", f.when), f.zone or "", Clock(f.duration),
+    detail.sub:SetText(string.format("%s   %s   %s%s", date("%Y-%m-%d %H:%M", f.when), f.zone or "", f.keyTime and string.format("key %s, %s in combat", Clock(f.keyTime), Clock(f.duration)) or Clock(f.duration),
         cmp and ("   |cffbbbbbbvs " .. date("%m/%d %H:%M", cmp.when) .. " " .. (cmp.name or "") .. "|r") or ""))
     for c, col in ipairs(COLS) do Cell(0, c):SetText(col[1]) end
     local byName = {}

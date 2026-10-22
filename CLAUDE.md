@@ -78,12 +78,20 @@ boss. The local player's row becomes `"you"` by short name.
 **Fight history and personal bests (`DPSReport_History.lua`, 2026-10-22, untested in game).** Opened
 from the "H" button (left of "T") or `/dpshistory`.
 
-- **Recording:** after each fight of 5s or more, one second after `PLAYER_REGEN_ENABLED` (retried
-  up to 6 times while the session is still secret), it reads the PLAIN end totals from the
-  Current DamageDone, HealingDone and Interrupts sessions. Stored in
-  `DPSReportCharDB.fightHistory` (newest 200), each fight `{when, zone, keyLevel, encounter{id,
-  name, difficultyID, size, success}, duration, name, players{n, c, d, h, i, me}}`. Duration comes
-  from `GetSessionDurationSeconds(Current)` (plain), else wall clock.
+- **Recording (boss pulls):** one second after `PLAYER_REGEN_ENABLED` (retried up to 6 times
+  while still secret) it reads the PLAIN end totals (DamageDone, HealingDone, Interrupts) of the
+  fight's OWN session BY ID (`FightSession`): the newest session that existed at regen-enabled
+  (`f.maxSession`) and is no longer than the fight's wall time + 5s. Duration is that session's
+  `durationSeconds`, so DPS matches the game meter's segment.
+  ⚠ **Never read `Current` for a finished fight** (user report 2026-10-22, numbers did not match
+  the meter): a retry that runs after a chained pull has begun reads THAT pull, and a boss kill
+  that completes a key read the key's whole-run session (Zul'jan saved as a 27-minute kill).
+  Stored in `DPSReportCharDB.fightHistory` (newest 200), each fight `{when, zone, keyLevel,
+  encounter{id, name, difficultyID, size, success}, wall, duration, name, players{n, c, d, h, i,
+  me}}`.
+- **`Repair()` (PLAYER_LOGIN, once, `DPSReportCharDB.historyRepaired`):** drops runs saved by
+  the old summing code (no `v = 2`) and boss pulls whose duration exceeds `wall` + 5, then
+  rebuilds the personal bests from what remains (both started 2026-10-22).
 - **Encounters:** tracked from `ENCOUNTER_START`/`END`, so a fight overlapping one is named
   "Boss (Difficulty) Kill/Wipe".
 - **Personal bests:** kills only, keyed `encounterID:difficultyID` in
@@ -95,12 +103,17 @@ from the "H" button (left of "T") or `/dpshistory`.
 - **Only boss pulls and WHOLE M+ runs are kept** (user decision 2026-10-22: trash was noise;
   `Store()` drops older plain-trash entries once per session).
   - **How a run is built:** opened at `CHALLENGE_MODE_START` (dungeon from
-    `GetMapUIInfo(GetActiveChallengeMapID())`). Every fight inside it — trash included — is
-    added up (`f.inRun` → `AddToRun`).
-  - **When it is saved:** after `CHALLENGE_MODE_COMPLETED`, once no fight is open and no
-    `Finalise` is `pending` (retried every 2s, up to 15 times). It is saved as `kind = "run"`,
-    with duration and `onTime` from `GetChallengeCompletionInfo()` (`time` is in ms). Its name is
-    "Dungeon +N (timed)".
+    `GetMapUIInfo(GetActiveChallengeMapID())`); 1s later (after the meter's own reset-on-start)
+    the Overall totals and `ns.OverallDuration()` are taken as a BASELINE. At the end the run is
+    Overall minus that baseline, i.e. exactly the meter's Overall for the key. It used to SUM
+    each fight's Current session, which double-counted chain pulls (994M vs the meter's 466M,
+    user report 2026-10-22).
+  - **When it is saved:** after `CHALLENGE_MODE_COMPLETED`, once no fight is open, no
+    `Finalise` is `pending` and Overall is plain (retried every 2s, up to 15 times). Saved as
+    `kind = "run", v = 2`. `duration` is COMBAT time (Overall's, ms bug corrected via
+    `DPSMeter:OverallDurationSeconds`), so DPS matches the meter; `keyTime` and `onTime` are
+    read from `GetChallengeCompletionInfo()` AT the completed event (it clears within seconds).
+    The list shows the key time; the detail shows both. Its name is "Dungeon +N (timed)".
   - **Dropped runs:** `CHALLENGE_MODE_RESET` drops the run. A `/reload` mid-key loses the run too
     (not persisted); its boss pulls are still kept.
 - **Search:** a box over the list; every typed word must appear in name, zone or date

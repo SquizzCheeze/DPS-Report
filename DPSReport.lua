@@ -8574,4 +8574,7 @@ do
     ns.AbbrevTotal = ABBREVIATE_OPTS_TOTAL
     -- The active profile's settings (reassigned on profile switch, so a getter).
     ns.GetSettings = function() return settings end
+    -- The Overall session's combat time, with the milliseconds bug corrected
+    -- (History's whole-run DPS divides by it, like the meter's Overall).
+    ns.OverallDuration = function() return DPSMeter:OverallDurationSeconds() end
 end

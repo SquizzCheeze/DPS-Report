@@ -27,7 +27,9 @@ New:
   character - with each player's DPS, damage, HPS, healing and interrupts.
   Search narrows the list as you type (a boss, a dungeon, +8, heroic, wipe, a
   date). Click one to see it; right-click another to compare - every number
-  gets a green/red % against it.
+  gets a green/red % against it. The numbers are the game meter's own: a
+  run matches its Overall for the key (DPS over time in combat, with the key
+  timer shown beside it), a boss pull matches that pull's segment.
 - Personal bests: your best DPS and best total on every boss you kill, by
   difficulty (Personal bests tab), with a line in chat when you beat one.
 - Threat meter: click the T on any meter's title bar (or /dpsthreat). Your
