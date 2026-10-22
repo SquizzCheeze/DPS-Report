@@ -23,3 +23,7 @@ desktop.ini
 # defensively in case anything ever drops one here.
 *.wtf
 SavedVariables/
+
+# The tray app is built locally by Tools/Build.cmd, never committed.
+Tools/*.exe
+Tools/icon.ico

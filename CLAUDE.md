@@ -54,7 +54,8 @@ Built on what `/dpsprobe` measured:
 
 **Key import (proof of concept, 2026-10-21, CONFIRMED working in game by the user the same day).** `Tools/DPSReportKeyExport.ps1`
 (launched by `Tools/Export Last Key.cmd`; `Tools` is in the `.pkgmeta` ignore list, so it does not
-ship). It is PowerShell 5.1 with an inline C# 5 parser (`Add-Type` — no newer C# syntax). It finds
+ship). It is PowerShell 5.1 loading the C# 5 parser from `Tools/Exporter.cs` (`Add-Type -Path`;
+a separate file since 2026-10-23, shared with the tray app — no newer C# syntax). It finds
 the last `CHALLENGE_MODE_START` that has a `CHALLENGE_MODE_END` after it, newest log first; 56 MB
 takes 1.3s. It counts:
 
@@ -385,3 +386,22 @@ It reads shared, complete lines only.
   600 MB log.
 - **Tested** by replaying the Ula'tek pull's tail into a scratch folder while it ran: the pull
   was copied 2.9s later.
+
+**Tray app (2026-10-23): `Tools/TrayApp.cs` -> `DPS Report Exporter.exe`, built by `Tools/Build.cmd`.**
+The watch mode above without a console window. `Build.cmd` uses the .NET Framework 4 `csc.exe` that
+ships with Windows (so C# 5 only: no `$""`, `?.` or `=>` members), compiles twice (pass 1 runs the
+exe with `--write-icon icon.ico`, which DRAWS the icon as a PNG-in-ICO; pass 2 embeds it), and
+kills a running copy first. The `.exe` and `icon.ico` are gitignored; `Tools` is not packaged.
+
+- **Same logic as `-Watch`** (`ReadNewLines`, triggers, K-record dedupe), polled on a 2s
+  `System.Threading.Timer` guarded by an `Interlocked` busy flag. Exports run off the UI thread and
+  results are `Post`ed back: the clipboard needs the STA UI thread (`SetDataObject` retries 10x).
+- **Menu:** Show recent exports (also double-click), Copy last key, Copy last boss pull, Pause
+  watching, Start with Windows (`HKCU\...\Run`, value "DPS Report Exporter"), Open / Change log
+  folder, Exit. Notifications are balloon tips (toasts on Windows 10/11).
+- **Recent exports:** the last 20, in memory only, each re-copyable from the window (closing the
+  window only hides it).
+- **Settings:** `%AppData%\DPSReportExporter\settings.txt` (`logFolder`, `paused`, `welcomed`).
+  The default log folder is four levels up from the exe. A single-instance mutex stops a second copy.
+- **Tested** by pointing it at a scratch folder and appending the Ula'tek tail: copied 4.8s later,
+  the same export the script makes.
