@@ -577,8 +577,15 @@ local function ParseKey(text)
     for rec in text:gmatch("[^~]+") do
         local kind, rest = rec:match("^(%u)%^(.*)$")
         if kind == "K" then
-            local name, level, secs, success, when = strsplit("^", rest)
-            f.zone = (name or "?") .. " +" .. (level or "?") .. (success == "1" and "" or " (depleted)")
+            -- kind: "mplus" (a key) or "raid" (one boss pull; level is its
+            -- difficulty). Exports from before raid support have no kind.
+            local name, level, secs, success, when, kind = strsplit("^", rest)
+            f.kind = kind == "raid" and "raid" or "mplus"
+            if f.kind == "raid" then
+                f.zone = (name or "?") .. " (" .. (level or "?") .. ") " .. (success == "1" and "Kill" or "Wipe")
+            else
+                f.zone = (name or "?") .. " +" .. (level or "?") .. (success == "1" and "" or " (depleted)")
+            end
             f.n = tonumber(secs) or 0
             f.duration = f.n
             f.clock = when or "?"
@@ -780,7 +787,7 @@ local function OpenImport()
         help:SetPoint("TOPLEFT", head, "BOTTOMLEFT", 0, -6)
         help:SetPoint("RIGHT", -10, 0)
         help:SetJustifyH("LEFT")
-        help:SetText("Run Export Last Key in DPSReport\\Tools, then press Ctrl+V here.")
+        help:SetText("Run Export Last Key in DPSReport\\Tools (keys and raid bosses), then press Ctrl+V here.")
 
         local box = CreateFrame("EditBox", nil, pasteBox, "BackdropTemplate")
         box:SetHeight(22)

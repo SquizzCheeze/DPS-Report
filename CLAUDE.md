@@ -75,6 +75,31 @@ export. An imported fight has `f.imported`: its values are plain, so `Render` sm
 Avg 1/3/5s), buckets, auto-scales, and shades boss pulls (`Graph.DrawBosses`). The hover names the
 boss. The local player's row becomes `"you"` by short name.
 
+**Raid pulls, saving and comparing (2026-10-22, untested in game).**
+
+- **Raid pulls, exporter side:** `-Mode auto|key|raid|boss`; auto takes whichever finished
+  last, a key or a raid pull. A raid pull is an `ENCOUNTER_START`/`_END` pair whose difficulty is
+  in `RaidDifficulty` (14–17, legacy 3–7/9, 33); `boss` takes any pull. The K record gains a 7th
+  field, kind (`mplus` | `raid`); for a raid, level is the difficulty name and success is the
+  kill flag. `ParseKey` labels it "Boss (Heroic) Kill/Wipe"; older exports with no kind read as
+  `mplus`.
+- **Reading the log:** the log is read SHARED (`FileShare.ReadWrite|Delete`) — WoW holds the
+  live log open, and an exclusive open threw IOException while the game was running. It is
+  STREAMED in two passes (find the span, then count), because a raid night's log was 663 MB;
+  that took 7s.
+- **The user's Logs folder is pruned by Raider.IO / Warcraft Logs archivers**, so older logs
+  disappear into `RaiderIOLogsArchive`/`warcraftlogsarchive`. The exporter only looks in `Logs`.
+- **Saved imports:** in `DPSReportCharDB.importedKeys`, as `{id, text, saved, zone, clock,
+  seconds, pinned}`, where id is the K record so a re-import replaces. The newest 20 unpinned
+  are kept, pinned are never trimmed. Parsed lazily (`LoadSaved`) from the Keys menu
+  (`MenuUtil.CreateContextMenu`: Open / Keep forever / Delete).
+- **Compare:** `view.compare` holds a fight object (not added to the fights list); there is a
+  Compare menu. `Render` buckets both runs over `max(n1, n2)` (`Graph.Bucket`/`BucketValue`:
+  a rate averages and is 0 past its end, a running total holds its final value). Bars split each
+  column, left this run and right the other in grey. `Graph.ComparePlayer` matches `"you"` to
+  `"you"`, else by short name. `Graph.CompareSummary` gives totals, % and averages; hover shows
+  both values. The comparison maths was tested out of game.
+
 ### `/dpsprobe` -- a TEMPORARY diagnostic (2026-10-21)
 
 `DPSReport_Probe.lua` (its own file and `.toc` line, so the main file is untouched). It measures two

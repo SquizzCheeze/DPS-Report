@@ -1,16 +1,19 @@
 <#
 DPSReportKeyExport.ps1 -- proof of concept (2026-10-21).
 
-Reads your WoW combat log, finds the most recent COMPLETED Mythic+ key, and
-copies a compact text string to the clipboard. In game: DPS Graph > Import,
-then Ctrl+V. The key shows as a fight with real per-second damage and healing
-for every player -- the detail the game hides from addons while you play.
+Reads your WoW combat log, finds the most recent COMPLETED Mythic+ key or RAID
+BOSS PULL (kill or wipe) -- whichever finished last -- and copies a compact
+text string to the clipboard. In game: DPS Graph > Import, then Ctrl+V. It
+shows as a fight with real per-second damage and healing for every player --
+the detail the game hides from addons while you play.
 
-Reads the log only; Archon (or anything else using the same log) is not
-affected. Nothing is uploaded anywhere.
+Reads the log only, opened shared, so it works while WoW is running and while
+Archon (or anything else) reads the same log. Logs are streamed, so a raid
+night's 600+ MB file takes a few seconds. Nothing is uploaded anywhere.
 
 Usage (or run "Export Last Key.cmd" next to this file):
     powershell -ExecutionPolicy Bypass -File DPSReportKeyExport.ps1
+    ... -Mode key | raid | boss       # only keys / only raid pulls / any boss pull
     ... -LogFolder "D:\Games\World of Warcraft\_retail_\Logs"   # if not the default
     ... -File WoWCombatLog-102026_172229.txt                     # a specific log
 
@@ -24,6 +27,8 @@ Advanced Combat Logging must be on (it is already, if you use Archon).
 param(
     [string]$LogFolder = "",
     [string]$File = "",
+    [ValidateSet("auto", "key", "raid", "boss")]
+    [string]$Mode = "auto",   # auto = whichever finished last: a key or a raid boss pull
     [string]$OutFile = ""     # testing: write here instead of the clipboard
 )
 
@@ -99,29 +104,131 @@ public static class DRKeyExport
 
     class Player { public int Index; public string Guid; public string Name = "?"; public string Spec = "0"; public long[] Dmg; public long[] Heal; }
 
-    // Returns the export string, or a line starting with "ERROR:".
-    public static string Export(string path)
+    // Raid difficulty IDs, named. Anything not listed is not a raid (8 is a
+    // Mythic+ key, 1/2/23 are dungeons).
+    static string RaidDifficulty(string id)
     {
-        string[] lines = File.ReadAllLines(path);
-
-        // The last CHALLENGE_MODE_START that has a CHALLENGE_MODE_END after it.
-        int start = -1, end = -1;
-        for (int i = lines.Length - 1; i >= 0 && start < 0; i--)
+        switch (id)
         {
-            string l = lines[i];
-            if (end < 0 && l.Contains("  CHALLENGE_MODE_END,")) { end = i; continue; }
-            if (end >= 0 && l.Contains("  CHALLENGE_MODE_START,")) start = i;
+            case "14": return "Normal";
+            case "15": return "Heroic";
+            case "16": return "Mythic";
+            case "17": return "LFR";
+            case "3": return "10 Player";
+            case "4": return "25 Player";
+            case "5": return "10 Heroic";
+            case "6": return "25 Heroic";
+            case "7": return "LFR";
+            case "9": return "40 Player";
+            case "33": return "Timewalking";
         }
-        if (start < 0) return "ERROR: no completed key in " + Path.GetFileName(path);
+        return null;
+    }
+
+    // The log line by line, opened SHARED: WoW keeps writing the current log
+    // while you play (and Archon reads it too), so an exclusive open fails.
+    static IEnumerable<string> ReadLines(string path)
+    {
+        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        using (var sr = new StreamReader(fs, Encoding.UTF8))
+        {
+            string l;
+            while ((l = sr.ReadLine()) != null) yield return l;
+        }
+    }
+
+    static bool Has(string line, string ev)
+    {
+        return line.IndexOf("  " + ev + ",", StringComparison.Ordinal) >= 0;
+    }
+
+    // mode: "auto" (whichever finished last: a completed key or a raid boss
+    // pull), "key", "raid", or "boss" (the last boss pull of any kind).
+    // Returns the export string, or a line starting with "ERROR:".
+    public static string Export(string path, string mode)
+    {
+        // Two streamed passes rather than loading the file: a raid night's log
+        // runs to hundreds of MB.
+        //
+        // Pass 1: the last completed key, and the last qualifying boss pull.
+        // A CHALLENGE_MODE_END with no open START is the reset the game logs
+        // just before a key begins, and is ignored.
+        int keyStart = -1, keyEnd = -1, openKey = -1;
+        int pullStart = -1, pullEnd = -1, openPull = -1;
+        string keyStartLine = null, keyEndLine = null, openKeyLine = null;
+        string pullStartLine = null, pullEndLine = null, openPullLine = null;
+        string pullDifficulty = null;
+        int i = -1;
+        foreach (string l in ReadLines(path))
+        {
+            i++;
+            if (Has(l, "CHALLENGE_MODE_START")) { openKey = i; openKeyLine = l; continue; }
+            if (Has(l, "CHALLENGE_MODE_END"))
+            {
+                if (openKey >= 0)
+                {
+                    keyStart = openKey; keyEnd = i;
+                    keyStartLine = openKeyLine; keyEndLine = l;
+                }
+                openKey = -1;
+                continue;
+            }
+            if (Has(l, "ENCOUNTER_START")) { openPull = i; openPullLine = l; continue; }
+            if (Has(l, "ENCOUNTER_END") && openPull >= 0)
+            {
+                DateTime ts; int bs;
+                TryTime(openPullLine, out ts, out bs);
+                var ef = Split(openPullLine, bs);
+                string diff = ef.Count > 3 ? ef[3] : "";
+                bool raid = RaidDifficulty(diff) != null;
+                if (mode == "boss" || raid)
+                {
+                    pullStart = openPull; pullEnd = i;
+                    pullStartLine = openPullLine; pullEndLine = l;
+                    pullDifficulty = diff;
+                }
+                openPull = -1;
+            }
+        }
+
+        bool useKey;
+        if (mode == "key") useKey = true;
+        else if (mode == "raid" || mode == "boss") useKey = false;
+        else useKey = keyEnd > pullEnd;
+        int start = useKey ? keyStart : pullStart;
+        int end = useKey ? keyEnd : pullEnd;
+        if (start < 0)
+        {
+            string what = mode == "key" ? "completed key" : mode == "raid" ? "raid boss pull"
+                : mode == "boss" ? "boss pull" : "completed key or raid boss pull";
+            return "ERROR: no " + what + " in " + Path.GetFileName(path);
+        }
+        string startLine = useKey ? keyStartLine : pullStartLine;
+        string endLine = useKey ? keyEndLine : pullEndLine;
 
         DateTime t0, t1; int b;
-        TryTime(lines[start], out t0, out b);
-        var startF = Split(lines[start], b);
-        TryTime(lines[end], out t1, out b);
-        var endF = Split(lines[end], b);
-        string dungeon = startF.Count > 1 ? startF[1] : "?";
-        string level = startF.Count > 4 ? startF[4] : "?";
-        string success = endF.Count > 2 ? endF[2] : "0";
+        TryTime(startLine, out t0, out b);
+        var startF = Split(startLine, b);
+        TryTime(endLine, out t1, out b);
+        var endF = Split(endLine, b);
+        string dungeon, level, success, kind;
+        if (useKey)
+        {
+            // CHALLENGE_MODE_START,"Dungeon",mapID,instanceID,level,[affixes]
+            dungeon = startF.Count > 1 ? startF[1] : "?";
+            level = startF.Count > 4 ? startF[4] : "?";
+            success = endF.Count > 2 ? endF[2] : "0";
+            kind = "mplus";
+        }
+        else
+        {
+            // ENCOUNTER_START,id,"Boss",difficulty,size,instance
+            // ENCOUNTER_END,id,"Boss",difficulty,size,success,fightTimeMs
+            dungeon = startF.Count > 2 ? startF[2] : "?";
+            level = RaidDifficulty(pullDifficulty) ?? (pullDifficulty == "8" ? "Mythic+" : "Dungeon");
+            success = endF.Count > 5 ? endF[5] : "0";
+            kind = "raid";
+        }
         int seconds = (int)Math.Ceiling((t1 - t0).TotalSeconds) + 1;
 
         var players = new Dictionary<string, Player>();
@@ -130,9 +237,13 @@ public static class DRKeyExport
         var bosses = new List<string>();
         var bossStart = new Dictionary<string, double>();
 
-        for (int i = start; i <= end; i++)
+        // Pass 2: count everything between start and end.
+        i = -1;
+        foreach (string l in ReadLines(path))
         {
-            string l = lines[i];
+            i++;
+            if (i < start) continue;
+            if (i > end) break;
             DateTime t;
             if (!TryTime(l, out t, out b)) continue;
             int comma = l.IndexOf(',', b);
@@ -217,7 +328,8 @@ public static class DRKeyExport
 
         var sb = new StringBuilder();
         sb.Append("DRK1~K^").Append(Clean(dungeon)).Append("^").Append(level).Append("^").Append(seconds)
-          .Append("^").Append(success).Append("^").Append(t0.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture));
+          .Append("^").Append(success).Append("^").Append(t0.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture))
+          .Append("^").Append(kind);
         foreach (var p in order)
             sb.Append("~P^").Append(p.Index).Append("^").Append(p.Name).Append("^").Append(p.Spec);
         foreach (var x in bosses) sb.Append("~").Append(x);
@@ -262,13 +374,18 @@ if ($candidates.Count -eq 0) { Write-Host "No combat logs found in $LogFolder" -
 foreach ($log in $candidates) {
     Write-Host "Reading $($log.Name) ($([math]::Round($log.Length / 1MB, 1)) MB)..."
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $out = [DRKeyExport]::Export($log.FullName)
+    $out = [DRKeyExport]::Export($log.FullName, $Mode)
     if ($out.StartsWith("ERROR:")) { Write-Host "  $out" -ForegroundColor DarkGray; continue }
     if ($OutFile) { [System.IO.File]::WriteAllText($OutFile, $out) } else { Set-Clipboard -Value $out }
     $head = ($out.Split("~")[1]).Split("^")
-    Write-Host ("Copied: {0} +{1}, {2}:{3:00}, {4} KB, in {5:0.0}s" -f $head[1], $head[2], [math]::Floor([int]$head[3] / 60), ([int]$head[3] % 60), [math]::Round($out.Length / 1KB), $sw.Elapsed.TotalSeconds) -ForegroundColor Green
+    if ($head[6] -eq "raid") {
+        $what = "{0} ({1}) {2}" -f $head[1], $head[2], $(if ($head[4] -eq "1") { "Kill" } else { "Wipe" })
+    } else {
+        $what = "{0} +{1}" -f $head[1], $head[2]
+    }
+    Write-Host ("Copied: {0}, {1}:{2:00}, {3} KB, in {4:0.0}s" -f $what, [math]::Floor([int]$head[3] / 60), ([int]$head[3] % 60), [math]::Round($out.Length / 1KB), $sw.Elapsed.TotalSeconds) -ForegroundColor Green
     Write-Host "In game: open the DPS Graph (G on a meter, or /dpsgraph), click Import, press Ctrl+V."
     exit 0
 }
-Write-Host "No completed Mythic+ key found in the logs." -ForegroundColor Yellow
+Write-Host "Nothing to export: no completed key or raid boss pull in the logs." -ForegroundColor Yellow
 exit 1

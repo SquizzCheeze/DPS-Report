@@ -16,7 +16,13 @@ New:
   log out; the game does not let addons save them. Two players with the same
   class and spec can't be told apart mid-fight, so they are left out of that
   fight's graph.
-- (Test) Import a finished key from your combat log into the graph, with the
-  real per-second numbers the game hides during play: run the exporter
-  script, then Import > Ctrl+V. Boss pulls are shaded, and Avg 1s/3s/5s
-  smooths the spikes.
+- (Test) Import a finished key OR raid boss pull (kill or wipe) from your
+  combat log into the graph, with the real per-second numbers the game hides
+  during play: run the exporter script, then Import > Ctrl+V. It works while
+  the game is running. Boss pulls are shaded, and Avg 1s/3s/5s smooths the
+  spikes.
+- Imported keys and pulls are SAVED (the last 20, plus any you pin to keep
+  forever) and listed under Keys, so they survive /reload and logging out.
+- Compare: pick another saved key or pull to show its bars in grey beside the
+  current one - same player, shared timeline - with both totals, the
+  difference and the averages.
