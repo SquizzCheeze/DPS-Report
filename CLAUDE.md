@@ -75,6 +75,21 @@ export. An imported fight has `f.imported`: its values are plain, so `Render` sm
 Avg 1/3/5s), buckets, auto-scales, and shades boss pulls (`Graph.DrawBosses`). The hover names the
 boss. The local player's row becomes `"you"` by short name.
 
+**Threat meter (`DPSReport_Threat.lua`, 2026-10-22, untested in game).** Opened from the "T" button
+(left of "G") or `/dpsthreat`. Built on the `/dpsprobe` result: threat is plain for players and
+pets in combat, dungeon Encounter and ChallengeMode (raids unmeasured).
+
+- **Reading:** every 0.3s while shown, `UnitDetailedThreatSituation(unit, target|focus)` for each
+  group unit and pet (pets are their own threat entries, named "Owner's pet").
+- **Sorting:** ranked on PLAIN copies (`sortTank`, `sortPercent`): tank first, then %. If any value
+  is secret, the rows stay in group order and still draw through `SetValue` / `SetFormattedText`.
+  Ranking was tested out of game.
+- **Your own row:** orange at status 2, red at 3. `UnitIsUnit` is pcall'd and plain-checked, since
+  it can be secret in rated PvP.
+- **Settings:** `DPSReportDB.threat` holds shown, unit, `hideOOC` (default on), locked and
+  position. A `placing` flag keeps the window up out of combat after it is switched on, until
+  combat or a drag, so it can be positioned.
+
 **Auto combat logging (`DPSReport_Logging.lua`, 2026-10-22, untested in game).**
 `settings.autoCombatLog` (off by default; Mythic+ page; `ns.GetSettings` reaches the profile).
 In a dungeon or raid it turns logging on; leaving turns it off — only if WE turned it on

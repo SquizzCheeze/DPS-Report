@@ -21,6 +21,11 @@ New:
   during play: run the exporter script, then Import > Ctrl+V. It works while
   the game is running. Boss pulls are shaded, and Avg 1s/3s/5s smooths the
   spikes.
+- Threat meter: click the T on any meter's title bar (or /dpsthreat). Your
+  group and their pets, ranked by threat on your target - whoever has aggro
+  is marked and listed first, and your own bar turns orange when you're
+  close to pulling and red when you have it. Right-click its title for
+  target or focus, hiding out of combat (on by default) and locking it.
 - New option (Mythic+ page): Log combat to file in dungeons and raids. Turns
   WoW's combat logging on when you enter one and off when you leave - but
   only if it turned it on: logging started by Archon, /combatlog or another

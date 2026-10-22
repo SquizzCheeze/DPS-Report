@@ -6326,6 +6326,28 @@ function MeterProto:CreateMeterFrame()
         if DPSReport_ToggleGraph then DPSReport_ToggleGraph() end
     end)
 
+    -- "T" button: the threat meter (DPSReport_Threat.lua), left of "G".
+    local threatBtn = CreateFrame("Button", nil, titleBar)
+    threatBtn:SetSize(14, 14)
+    threatBtn:SetPoint("RIGHT", graphBtn, "LEFT", -2, 0)
+    local threatText = threatBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    threatText:SetPoint("CENTER", 0, 0)
+    threatText:SetText("T")
+    threatText:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+    threatBtn:SetScript("OnEnter", function()
+        threatText:SetTextColor(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3])
+        GameTooltip:SetOwner(threatBtn, "ANCHOR_BOTTOM")
+        GameTooltip:AddLine("Threat meter")
+        GameTooltip:Show()
+    end)
+    threatBtn:SetScript("OnLeave", function()
+        threatText:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+        GameTooltip:Hide()
+    end)
+    threatBtn:SetScript("OnClick", function()
+        if DPSReport_ToggleThreat then DPSReport_ToggleThreat() end
+    end)
+
     -- Break-snap button: small accent dot at the bottom-right of the frame,
     -- visible only when this frame is snapped to another.
     local breakSnapBtn = CreateFrame("Button", nil, frame, "BackdropTemplate")
