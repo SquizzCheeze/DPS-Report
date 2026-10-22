@@ -92,6 +92,20 @@ from the "H" button (left of "T") or `/dpshistory`.
 - **Window:** a fight list (left-click select, right-click compare), a per-player table with %
   changes matched by short name, and a Personal bests tab. Recording and naming were simulated out
   of game (two kills plus a wipe).
+- **Only boss pulls and WHOLE M+ runs are kept** (user decision 2026-10-22: trash was noise;
+  `Store()` drops older plain-trash entries once per session).
+  - **How a run is built:** opened at `CHALLENGE_MODE_START` (dungeon from
+    `GetMapUIInfo(GetActiveChallengeMapID())`). Every fight inside it — trash included — is
+    added up (`f.inRun` → `AddToRun`).
+  - **When it is saved:** after `CHALLENGE_MODE_COMPLETED`, once no fight is open and no
+    `Finalise` is `pending` (retried every 2s, up to 15 times). It is saved as `kind = "run"`,
+    with duration and `onTime` from `GetChallengeCompletionInfo()` (`time` is in ms). Its name is
+    "Dungeon +N (timed)".
+  - **Dropped runs:** `CHALLENGE_MODE_RESET` drops the run. A `/reload` mid-key loses the run too
+    (not persisted); its boss pulls are still kept.
+- **Search:** a box over the list; every typed word must appear in name, zone or date
+  (`Filtered`). Simulated out of game with a key (trash, boss, trash), outside-key trash and an
+  old trash entry.
 
 **Threat meter (`DPSReport_Threat.lua`, 2026-10-22, CONFIRMED working in game by the user in a follower dungeon).** Opened from the "T" button
 (left of "G") or `/dpsthreat`. Built on the `/dpsprobe` result: threat is plain for players and

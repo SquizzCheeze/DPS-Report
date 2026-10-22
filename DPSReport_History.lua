@@ -34,11 +34,23 @@ local function Plain(v)
     return v
 end
 
+-- Only boss pulls and whole Mythic+ runs are kept (user decision
+-- 2026-10-22: trash fights were noise). Entries saved before that -- plain
+-- trash fights -- are dropped the first time the store is read.
+local pruned = false
 local function Store()
     if type(DPSReportCharDB) ~= "table" then return nil, nil end
     DPSReportCharDB.fightHistory = DPSReportCharDB.fightHistory or {}
     DPSReportCharDB.personalBests = DPSReportCharDB.personalBests or {}
-    return DPSReportCharDB.fightHistory, DPSReportCharDB.personalBests
+    local history = DPSReportCharDB.fightHistory
+    if not pruned then
+        pruned = true
+        for i = #history, 1, -1 do
+            local f = history[i]
+            if not (f.encounter or f.kind == "run") then table.remove(history, i) end
+        end
+    end
+    return history, DPSReportCharDB.personalBests
 end
 
 local function Rgb(t) return t[1], t[2], t[3] end
@@ -139,24 +151,90 @@ local function CheckBest(f)
     if me.d > (b.total or 0) then b.total, b.totalWhen = me.d, f.when end
 end
 
-local function Finalise(f, tries)
-    local list = ReadTotals()
-    if not list then
-        if tries < 6 then C_Timer.After(1, function() Finalise(f, tries + 1) end) end
-        return
-    end
-    local ok, dur = pcall(C_DamageMeter.GetSessionDurationSeconds, Enum.DamageMeterSessionType.Current)
-    dur = ok and Plain(dur)
-    f.duration = (type(dur) == "number" and dur > 0) and dur or f.wall
-    if f.duration < MIN_SECONDS then return end
-    f.players = list
-    f.name = FightName(f)
+local function Save(f)
     local history = Store()
     if not history then return end
     history[#history + 1] = f
     while #history > MAX_FIGHTS do table.remove(history, 1) end
-    CheckBest(f)
     if ns.History.OnNewFight then ns.History.OnNewFight() end
+end
+
+-- A WHOLE Mythic+ run: every fight in the key added up, trash included, so
+-- the run's totals exist even though only its boss pulls are kept on their
+-- own. Opened at CHALLENGE_MODE_START, saved once the key is complete AND its
+-- last fight has been counted; an abandoned key is simply dropped.
+local run
+local pending = 0       -- fights still waiting for their totals
+
+local function AddToRun(list)
+    if not run then return end
+    for _, p in ipairs(list) do
+        local r = run.players[p.n]
+        if not r then
+            r = { n = p.n, c = p.c, d = 0, h = 0, i = 0 }
+            run.players[p.n] = r
+        end
+        if p.me then r.me = true end
+        r.d, r.h, r.i = r.d + p.d, r.h + p.h, r.i + p.i
+    end
+end
+
+local function CloseRun(tries)
+    if not (run and run.completed) then return end
+    -- Wait for the key's last fight to be counted.
+    if (current or pending > 0) and tries < 15 then
+        C_Timer.After(2, function() CloseRun(tries + 1) end)
+        return
+    end
+    local r = run
+    run = nil
+    local ok, info = pcall(C_ChallengeMode.GetChallengeCompletionInfo)
+    info = ok and type(info) == "table" and info or {}
+    local ms, onTime = Plain(info.time), Plain(info.onTime)
+    local duration = (type(ms) == "number" and ms > 0) and ms / 1000 or (GetTime() - r.started)
+    local list = {}
+    for _, p in pairs(r.players) do list[#list + 1] = p end
+    if #list == 0 then return end
+    table.sort(list, function(a, b) return a.d > b.d end)
+    Save({
+        kind = "run", when = r.when, zone = r.zone, keyLevel = r.level, onTime = onTime,
+        duration = duration, players = list,
+        name = string.format("%s +%d %s", r.zone or "?", r.level or 0,
+            onTime == true and "(timed)" or (onTime == false and "(over time)" or "")),
+    })
+end
+
+local function OpenRun()
+    local ok, mapID = pcall(C_ChallengeMode.GetActiveChallengeMapID)
+    mapID = ok and Plain(mapID)
+    local name = mapID and C_ChallengeMode.GetMapUIInfo(mapID)
+    local okL, level = pcall(C_ChallengeMode.GetActiveKeystoneInfo)
+    run = { when = time(), started = GetTime(), zone = Plain(name) or Context().zone,
+            level = okL and Plain(level) or 0, players = {} }
+end
+
+local function Finalise(f, tries)
+    local list = ReadTotals()
+    if not list then
+        if tries < 6 then
+            C_Timer.After(1, function() Finalise(f, tries + 1) end)
+        else
+            pending = pending - 1
+        end
+        return
+    end
+    pending = pending - 1
+    local ok, dur = pcall(C_DamageMeter.GetSessionDurationSeconds, Enum.DamageMeterSessionType.Current)
+    dur = ok and Plain(dur)
+    f.duration = (type(dur) == "number" and dur > 0) and dur or f.wall
+    if f.inRun then AddToRun(list) end
+    -- Only boss pulls are kept on their own.
+    if not f.encounter or f.duration < MIN_SECONDS then return end
+    f.players = list
+    f.name = FightName(f)
+    f.inRun = nil
+    Save(f)
+    CheckBest(f)
 end
 
 local ev = CreateFrame("Frame")
@@ -164,8 +242,20 @@ ev:RegisterEvent("PLAYER_REGEN_DISABLED")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("ENCOUNTER_START")
 ev:RegisterEvent("ENCOUNTER_END")
+ev:RegisterEvent("CHALLENGE_MODE_START")
+ev:RegisterEvent("CHALLENGE_MODE_COMPLETED")
+ev:RegisterEvent("CHALLENGE_MODE_RESET")
 ev:SetScript("OnEvent", function(_, event, a1, a2, a3, a4, a5)
-    if event == "ENCOUNTER_START" then
+    if event == "CHALLENGE_MODE_START" then
+        OpenRun()
+    elseif event == "CHALLENGE_MODE_COMPLETED" then
+        if run then
+            run.completed = true
+            C_Timer.After(2, function() CloseRun(0) end)
+        end
+    elseif event == "CHALLENGE_MODE_RESET" then
+        run = nil
+    elseif event == "ENCOUNTER_START" then
         -- encounterID, name, difficultyID, groupSize
         encounter = { id = a1, name = a2, difficultyID = a3, size = a4 }
         if current then current.encounter = encounter end
@@ -176,14 +266,16 @@ ev:SetScript("OnEvent", function(_, event, a1, a2, a3, a4, a5)
     elseif event == "PLAYER_REGEN_DISABLED" then
         local ctx = Context()
         current = { when = time(), started = GetTime(), zone = ctx.zone, keyLevel = ctx.keyLevel,
-                    encounter = encounter }
+                    encounter = encounter, inRun = run ~= nil }
     elseif event == "PLAYER_REGEN_ENABLED" then
         local f = current
         current = nil
         if not f then return end
         f.wall = GetTime() - f.started
         f.started = nil
-        if f.wall < MIN_SECONDS then return end
+        -- Trash outside a key is not kept and counts toward nothing.
+        if not (f.encounter or f.inRun) then return end
+        pending = pending + 1
         C_Timer.After(1, function() Finalise(f, 0) end)
     end
 end)
@@ -224,12 +316,31 @@ local function MyDps(f)
     end
 end
 
-local function RenderList()
+-- Newest first, narrowed by the search box: every word typed must appear in
+-- the fight's name, zone or date ("nalorakk heroic", "+8 timed", "10/22").
+local function Filtered()
     local history = Store() or {}
-    local n = #history
+    local words = {}
+    for w in (state.filter or ""):lower():gmatch("%S+") do words[#words + 1] = w end
+    local out = {}
+    for i = #history, 1, -1 do
+        local f = history[i]
+        local hay = ((f.name or "") .. " " .. (f.zone or "") .. " " .. date("%m/%d %Y-%m-%d", f.when or 0)):lower()
+        local keep = true
+        for _, w in ipairs(words) do
+            if not hay:find(w, 1, true) then keep = false break end
+        end
+        if keep then out[#out + 1] = f end
+    end
+    return out
+end
+
+local function RenderList()
+    local shown = Filtered()
+    local n = #shown
     for i = 1, math.max(n, #listRows) do
         local row = listRows[i]
-        local f = history[n - i + 1]      -- newest first
+        local f = shown[i]
         if f then
             if not row then
                 row = CreateFrame("Button", nil, listChild)
@@ -274,6 +385,8 @@ local function RenderList()
     end
     listChild:SetHeight(math.max(1, n * 18))
     listChild.empty:SetShown(n == 0)
+    listChild.empty:SetText((state.filter or "") ~= "" and "Nothing matches that search."
+        or "Nothing recorded yet. Boss pulls and whole Mythic+ runs are kept from now on.")
 end
 
 local COLS = { { "Player", 120 }, { "DPS", 80 }, { "Damage", 80 }, { "HPS", 80 }, { "Healing", 80 }, { "Kicks", 50 } }
@@ -446,7 +559,26 @@ local function Build()
 
     -- The fight list.
     local sf = CreateFrame("ScrollFrame", nil, win, "UIPanelScrollFrameTemplate")
-    sf:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 6, -6)
+    -- Search: narrows the list as you type (see Filtered).
+    local search = CreateFrame("EditBox", nil, win, "BackdropTemplate")
+    search:SetSize(250, 20)
+    search:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 6, -6)
+    ns.ApplyBackdrop(search, C.control, C.border)
+    search:SetFontObject(GameFontHighlightSmall)
+    search:SetTextInsets(6, 6, 0, 0)
+    search:SetAutoFocus(false)
+    local hint = search:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hint:SetPoint("LEFT", 6, 0)
+    hint:SetText("Search: boss, dungeon, +level, heroic, wipe...")
+    search:SetScript("OnTextChanged", function(self)
+        state.filter = self:GetText()
+        hint:SetShown(state.filter == "")
+        History.Render()
+    end)
+    search:SetScript("OnEscapePressed", function(self) self:SetText("") self:ClearFocus() end)
+    search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+
+    sf:SetPoint("TOPLEFT", search, "BOTTOMLEFT", 0, -6)
     sf:SetPoint("BOTTOMLEFT", win, "BOTTOMLEFT", 6, 8)
     sf:SetWidth(250)
     listChild = CreateFrame("Frame", nil, sf)
