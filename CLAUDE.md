@@ -75,6 +75,24 @@ export. An imported fight has `f.imported`: its values are plain, so `Render` sm
 Avg 1/3/5s), buckets, auto-scales, and shades boss pulls (`Graph.DrawBosses`). The hover names the
 boss. The local player's row becomes `"you"` by short name.
 
+**Fight history and personal bests (`DPSReport_History.lua`, 2026-10-22, untested in game).** Opened
+from the "H" button (left of "T") or `/dpshistory`.
+
+- **Recording:** after each fight of 5s or more, one second after `PLAYER_REGEN_ENABLED` (retried
+  up to 6 times while the session is still secret), it reads the PLAIN end totals from the
+  Current DamageDone, HealingDone and Interrupts sessions. Stored in
+  `DPSReportCharDB.fightHistory` (newest 200), each fight `{when, zone, keyLevel, encounter{id,
+  name, difficultyID, size, success}, duration, name, players{n, c, d, h, i, me}}`. Duration comes
+  from `GetSessionDurationSeconds(Current)` (plain), else wall clock.
+- **Encounters:** tracked from `ENCOUNTER_START`/`END`, so a fight overlapping one is named
+  "Boss (Difficulty) Kill/Wipe".
+- **Personal bests:** kills only, keyed `encounterID:difficultyID` in
+  `DPSReportCharDB.personalBests`, storing best DPS (your total / duration), best total and kill
+  count; beating the best DPS prints a line.
+- **Window:** a fight list (left-click select, right-click compare), a per-player table with %
+  changes matched by short name, and a Personal bests tab. Recording and naming were simulated out
+  of game (two kills plus a wipe).
+
 **Threat meter (`DPSReport_Threat.lua`, 2026-10-22, CONFIRMED working in game by the user in a follower dungeon).** Opened from the "T" button
 (left of "G") or `/dpsthreat`. Built on the `/dpsprobe` result: threat is plain for players and
 pets in combat, dungeon Encounter and ChallengeMode (raids unmeasured).

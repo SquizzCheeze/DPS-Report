@@ -17,4 +17,5 @@ DPSReport.lua
 DPSReport_Graph.lua
 DPSReport_Logging.lua
 DPSReport_Threat.lua
+DPSReport_History.lua
 DPSReport_Probe.lua

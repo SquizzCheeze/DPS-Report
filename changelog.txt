@@ -21,6 +21,13 @@ New:
   during play: run the exporter script, then Import > Ctrl+V. It works while
   the game is running. Boss pulls are shaded, and Avg 1s/3s/5s smooths the
   spikes.
+- Fight history: click the H on any meter's title bar (or /dpshistory).
+  Every fight is kept (the last 200, per character) with each player's DPS,
+  damage, HPS, healing and interrupts. Boss fights are named "Boss
+  (Difficulty) Kill/Wipe". Click a fight to see it; right-click another to
+  compare - every number gets a green/red % against it.
+- Personal bests: your best DPS and best total on every boss you kill, by
+  difficulty (Personal bests tab), with a line in chat when you beat one.
 - Threat meter: click the T on any meter's title bar (or /dpsthreat). Your
   group and their pets, ranked by threat on your target - whoever has aggro
   is marked and listed first, and your own bar turns orange when you're

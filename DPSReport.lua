@@ -6348,6 +6348,28 @@ function MeterProto:CreateMeterFrame()
         if DPSReport_ToggleThreat then DPSReport_ToggleThreat() end
     end)
 
+    -- "H" button: fight history and personal bests (DPSReport_History.lua).
+    local historyBtn = CreateFrame("Button", nil, titleBar)
+    historyBtn:SetSize(14, 14)
+    historyBtn:SetPoint("RIGHT", threatBtn, "LEFT", -2, 0)
+    local historyText = historyBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    historyText:SetPoint("CENTER", 0, 0)
+    historyText:SetText("H")
+    historyText:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+    historyBtn:SetScript("OnEnter", function()
+        historyText:SetTextColor(DR_COLORS.accent[1], DR_COLORS.accent[2], DR_COLORS.accent[3])
+        GameTooltip:SetOwner(historyBtn, "ANCHOR_BOTTOM")
+        GameTooltip:AddLine("Fight history and personal bests")
+        GameTooltip:Show()
+    end)
+    historyBtn:SetScript("OnLeave", function()
+        historyText:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+        GameTooltip:Hide()
+    end)
+    historyBtn:SetScript("OnClick", function()
+        if DPSReport_ToggleHistory then DPSReport_ToggleHistory() end
+    end)
+
     -- Break-snap button: small accent dot at the bottom-right of the frame,
     -- visible only when this frame is snapped to another.
     local breakSnapBtn = CreateFrame("Button", nil, frame, "BackdropTemplate")
