@@ -75,6 +75,14 @@ export. An imported fight has `f.imported`: its values are plain, so `Render` sm
 Avg 1/3/5s), buckets, auto-scales, and shades boss pulls (`Graph.DrawBosses`). The hover names the
 boss. The local player's row becomes `"you"` by short name.
 
+**Auto combat logging (`DPSReport_Logging.lua`, 2026-10-22, untested in game).**
+`settings.autoCombatLog` (off by default; Mythic+ page; `ns.GetSettings` reaches the profile).
+In a dungeon or raid it turns logging on; leaving turns it off — only if WE turned it on
+(`DPSReportDB.autoLogOwned`, which survives `/reload`). Logging already on (Archon, `/combatlog`,
+another addon) is left alone. Ours found off mid-visit means someone stopped it: ownership is
+dropped and logging is not restarted until we leave. It reminds once if `advancedCombatLogging`
+is off. `LoggingCombat` is undocumented but live (BigWigs/Details/Blizzard's `/combatlog`).
+
 **Raid pulls, saving and comparing (2026-10-22, untested in game).**
 
 - **Raid pulls, exporter side:** `-Mode auto|key|raid|boss`; auto takes whichever finished

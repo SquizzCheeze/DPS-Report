@@ -21,6 +21,11 @@ New:
   during play: run the exporter script, then Import > Ctrl+V. It works while
   the game is running. Boss pulls are shaded, and Avg 1s/3s/5s smooths the
   spikes.
+- New option (Mythic+ page): Log combat to file in dungeons and raids. Turns
+  WoW's combat logging on when you enter one and off when you leave - but
+  only if it turned it on: logging started by Archon, /combatlog or another
+  addon is left alone, and if you switch it off yourself it stays off for
+  that visit. Off by default.
 - Imported keys and pulls are SAVED (the last 20, plus any you pin to keep
   forever) and listed under Keys, so they survive /reload and logging out.
 - Compare: pick another saved key or pull to show its bars in grey beside the

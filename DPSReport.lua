@@ -698,6 +698,7 @@ local DEFAULT_SETTINGS = {
     resetOnMythicStart = false,
     saveRaidPulls = true,   -- store each raid boss pull (kill or wipe) as a segment
     compareLastRun = false, -- after a key, print your numbers vs your last run of that dungeon
+    autoCombatLog = false,  -- combat logging on in dungeons/raids (DPSReport_Logging.lua)
 
     -- "summary" = the highlight reel below; "single" = one metric, whole group
     -- ranked highest to lowest. autoReportType only applies to "single", and
@@ -2955,6 +2956,7 @@ local function RefreshOptionsPanel()
         panelWidgets.resetMythicCB:SetChecked(settings.resetOnMythicStart or false)
         if panelWidgets.raidPullsCB then panelWidgets.raidPullsCB:SetChecked(settings.saveRaidPulls ~= false) end
         if panelWidgets.compareCB then panelWidgets.compareCB:SetChecked(settings.compareLastRun == true) end
+        if panelWidgets.autoLogCB then panelWidgets.autoLogCB:SetChecked(settings.autoCombatLog == true) end
     end
     if panelWidgets.shortNamesCB then
         panelWidgets.shortNamesCB:SetChecked(settings.shortNames ~= false)
@@ -3400,6 +3402,15 @@ function DPSReport_OpenOptionsPanel()
     end)
     compareCB:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
     panelWidgets.compareCB = compareCB
+    yOffset = yOffset - 24
+
+    -- Combat log files for the key/raid exporter (Tools); DPSReport_Logging.lua.
+    local autoLogCB = CreateDRCheckbox(content, "Log combat to file in dungeons and raids", function(checked)
+        settings.autoCombatLog = checked
+        if DPSReport_ApplyAutoCombatLog then DPSReport_ApplyAutoCombatLog() end
+    end)
+    autoLogCB:SetPoint("TOPLEFT", content, "TOPLEFT", leftPad, yOffset)
+    panelWidgets.autoLogCB = autoLogCB
     yOffset = yOffset - 24
 
     -- === REAL-TIME METER ===
@@ -8517,4 +8528,6 @@ do
     ns.ResolveName = ResolveSourcePlainName
     ns.AbbrevPS = ABBREVIATE_OPTS_PS
     ns.AbbrevTotal = ABBREVIATE_OPTS_TOTAL
+    -- The active profile's settings (reassigned on profile switch, so a getter).
+    ns.GetSettings = function() return settings end
 end
