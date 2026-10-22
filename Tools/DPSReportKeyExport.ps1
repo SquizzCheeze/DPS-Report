@@ -29,7 +29,8 @@ param(
     [string]$File = "",
     [ValidateSet("auto", "key", "raid", "boss")]
     [string]$Mode = "auto",   # auto = whichever finished last: a key or a raid boss pull
-    [string]$OutFile = ""     # testing: write here instead of the clipboard
+    [string]$OutFile = "",    # testing: write here instead of the clipboard
+    [switch]$Watch            # keep running: copy each boss pull / key the moment it ends
 )
 
 $ErrorActionPreference = "Stop"
@@ -549,6 +550,86 @@ public static class DRKeyExport
     }
 }
 "@
+
+function Copy-Export([string]$text) {
+    if ($OutFile) { [System.IO.File]::WriteAllText($OutFile, $text) } else { Set-Clipboard -Value $text }
+}
+
+function Describe-Export([string]$text) {
+    $head = ($text.Split("~")[1]).Split("^")
+    if ($head[6] -eq "raid") {
+        $what = "{0} ({1}) {2}" -f $head[1], $head[2], $(if ($head[4] -eq "1") { "Kill" } else { "Wipe" })
+    } else {
+        $what = "{0} +{1}" -f $head[1], $head[2]
+    }
+    return "{0}, {1}:{2:00}, {3} KB" -f $what, [math]::Floor([int]$head[3] / 60), ([int]$head[3] % 60), [math]::Round($text.Length / 1KB)
+}
+
+# Watch mode: follow the newest combat log as WoW writes it. When a boss pull
+# ends (ENCOUNTER_END, outside a key) or a key ends (CHALLENGE_MODE_END), that
+# pull or key is exported and copied straight away, with a chime -- in game it
+# is just Import > Ctrl+V. Only complete lines are read, so a line WoW is still
+# writing waits for the next poll. The same pull is never copied twice: the
+# reset CHALLENGE_MODE_END the game logs before a key starts would otherwise
+# re-copy the previous key.
+if ($Watch) {
+    Write-Host "Watching $LogFolder for boss pulls and finished keys. Leave this window open; Ctrl+C stops it." -ForegroundColor Cyan
+    $current = $null; $pos = 0; $carry = ""; $inKey = $false; $lastId = ""
+    $first = $true
+    while ($true) {
+        $newest = Get-ChildItem -Path $LogFolder -Filter "WoWCombatLog*.txt" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($newest -and (-not $current -or $newest.FullName -ne $current)) {
+            $current = $newest.FullName
+            # The log open at start: only what happens from now on. A log
+            # created later (logging restarted): all of it.
+            $pos = if ($first) { $newest.Length } else { 0 }
+            $carry = ""; $inKey = $false
+            Write-Host "Following $($newest.Name)" -ForegroundColor DarkGray
+        }
+        $first = $false
+        if ($current) {
+            $trigger = $null
+            try {
+                $fs = New-Object System.IO.FileStream($current, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+                    ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+                try {
+                    if ($fs.Length -lt $pos) { $pos = 0; $carry = "" }      # the file was replaced
+                    if ($fs.Length -gt $pos) {
+                        $fs.Position = $pos
+                        $buf = New-Object byte[] ($fs.Length - $pos)
+                        $read = $fs.Read($buf, 0, $buf.Length)
+                        $pos += $read
+                        $text = $carry + [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+                        $cut = $text.LastIndexOf("`n")
+                        if ($cut -lt 0) { $carry = $text; $text = "" } else { $carry = $text.Substring($cut + 1); $text = $text.Substring(0, $cut) }
+                        foreach ($line in $text.Split("`n")) {
+                            if ($line.Contains("  CHALLENGE_MODE_START,")) { $inKey = $true }
+                            elseif ($line.Contains("  CHALLENGE_MODE_END,")) { $inKey = $false; $trigger = "key" }
+                            elseif ($line.Contains("  ENCOUNTER_END,") -and -not $inKey) { $trigger = "boss" }
+                        }
+                    }
+                } finally { $fs.Dispose() }
+            } catch {
+                Write-Host "  Couldn't read the log: $($_.Exception.Message)" -ForegroundColor DarkGray
+            }
+            if ($trigger) {
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                $out = [DRKeyExport]::Export($current, $trigger)
+                if (-not $out.StartsWith("ERROR:")) {
+                    $id = $out.Split("~")[1]
+                    if ($id -ne $lastId) {
+                        $lastId = $id
+                        Copy-Export $out
+                        Write-Host ("[{0:HH:mm}] Copied: {1}, in {2:0.0}s -- in game: Import, Ctrl+V" -f (Get-Date), (Describe-Export $out), $sw.Elapsed.TotalSeconds) -ForegroundColor Green
+                        [System.Media.SystemSounds]::Asterisk.Play()
+                    }
+                }
+            }
+        }
+        Start-Sleep -Seconds 2
+    }
+}
 
 if ($File) {
     $candidates = @(Get-Item (Join-Path $LogFolder $File))

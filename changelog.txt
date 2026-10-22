@@ -49,6 +49,10 @@ New:
   with spec icons and a Find a character box, All characters (everyone
   stacked in class colours), and an Event log of the player's casts and
   aura changes with its own filter. Timeline is the old Casts toggle.
+- Watch And Copy (in the addon's Tools folder): leave it open while you
+  play and every boss pull and finished key is copied to the clipboard the
+  moment it ends, with a chime - in game just Import, Ctrl+V.
+- Find a character also finds you by name; your row shows your name.
 - Timeline: on an imported key or pull, lanes under the ability graph -
   one lane per spell with its icon and name, an icon at every cast, and a bar
   wherever its DoT, HoT, buff or channel was up. Window (all/15s/30s/1m/2m)

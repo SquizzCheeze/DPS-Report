@@ -356,3 +356,19 @@ These two stores update on very different schedules, and that is deliberate. `Sa
 ### Addon inter-communication
 
 Uses `C_ChatInfo.RegisterAddonMessagePrefix("DPSReport")` + `CHAT_MSG_ADDON` to broadcast/receive nicknames between group members running the addon (`BroadcastNickname`/`OnAddonMessage`), populating the shared `nicknameCache`.
+
+**Exporter watch mode (2026-10-22): `-Watch` / `Tools\Watch And Copy.cmd`.** It polls the newest
+log every 2s and reads only the bytes appended since the last poll. Two starting cases: a log that
+is already open at start begins at its current end; a log created later is read from the start.
+It reads shared, complete lines only.
+
+- **Triggers:** a `CHALLENGE_MODE_END` exports with mode `key`. An `ENCOUNTER_END` exports with
+  mode `boss` only when the watcher has not seen a `CHALLENGE_MODE_START` (dungeon bosses inside a
+  key wait for the whole key).
+- **Dedupe:** each export is compared with the last one copied by its K record, so a repeat is
+  skipped. This matters because the game logs a reset `CHALLENGE_MODE_END` just before a key
+  starts, which would otherwise re-copy the previous key.
+- **Each export re-reads the whole file:** about 3s for 120 MB; longer on a raid night's
+  600 MB log.
+- **Tested** by replaying the Ula'tek pull's tail into a scratch folder while it ran: the pull
+  was copied 2.9s later.

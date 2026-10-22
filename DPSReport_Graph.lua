@@ -977,13 +977,24 @@ local function PlayerIcon(p)
     return nil, p and p.class and ("classicon-" .. p.class:lower())
 end
 
+-- A sidebar row's label: your own row shows your name, with "(you)".
+function Graph.SideLabel(key, p)
+    if key == "you" then
+        local me = p and p.name and Ambiguate(p.name, "short") or UnitName("player")
+        return (me or "You") .. " (you)"
+    end
+    return PlayerLabel(p)
+end
+
 function Graph.RenderSidebar(f)
     if not side then return end
     local filter = (sideSearch:GetText() or ""):lower()
     local keys = {}
     for _, key in ipairs(PlayerKeys(f)) do
-        local label = PlayerLabel(f.players[key])
-        if filter == "" or label:lower():find(filter, 1, true) then keys[#keys + 1] = key end
+        -- Searched by the real name too: your own row is labelled "you".
+        local p = f.players[key]
+        local hay = (Graph.SideLabel(key, p) .. " " .. (p and p.name or "")):lower()
+        if filter == "" or hay:find(filter, 1, true) then keys[#keys + 1] = key end
     end
     table.sort(keys, function(a, b)
         if a == "you" then return true end
@@ -1037,7 +1048,7 @@ function Graph.RenderSidebar(f)
             else
                 r.icon:SetColorTexture(0.3, 0.3, 0.3, 1)
             end
-            r.text:SetText(PlayerLabel(p))
+            r.text:SetText(Graph.SideLabel(key, p))
             local cc = p and p.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[p.class]
             if cc then r.text:SetTextColor(cc.r, cc.g, cc.b) else r.text:SetTextColor(1, 1, 1) end
             r.sel:SetShown(not (f.imported and view.all) and key == view.player)
