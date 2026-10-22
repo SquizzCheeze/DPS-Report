@@ -278,19 +278,34 @@ end
 
 local COLS = { { "Player", 120 }, { "DPS", 80 }, { "Damage", 80 }, { "HPS", 80 }, { "Healing", 80 }, { "Kicks", 50 } }
 
+-- Column positions, fitted to the pane on every render: the name takes about
+-- a quarter, the numbers share the rest. Fixed widths ran the last column off
+-- the window's edge at its default size (user screenshot 2026-10-22).
+local colX, colW = {}, {}
+local function LayoutColumns()
+    local width = detail:GetWidth()
+    local nameW = math.max(90, math.floor(width * 0.26))
+    local rest = (width - nameW) / (#COLS - 1)
+    local x = 0
+    for c = 1, #COLS do
+        colW[c] = c == 1 and nameW or rest
+        colX[c] = x
+        x = x + colW[c]
+    end
+end
+
 local function Cell(r, c)
     cells[r] = cells[r] or {}
     local fs = cells[r][c]
     if not fs then
         fs = detail:CreateFontString(nil, "OVERLAY", r == 0 and "GameFontNormalSmall" or "GameFontHighlightSmall")
-        local x = 0
-        for i = 1, c - 1 do x = x + COLS[i][2] end
-        fs:SetPoint("TOPLEFT", detail, "TOPLEFT", x, -40 - r * 16)
-        fs:SetWidth(COLS[c][2] - 4)
         fs:SetJustifyH(c == 1 and "LEFT" or "RIGHT")
         fs:SetWordWrap(false)
         cells[r][c] = fs
     end
+    fs:ClearAllPoints()
+    fs:SetPoint("TOPLEFT", detail, "TOPLEFT", colX[c] or 0, -40 - r * 16)
+    fs:SetWidth(math.max(10, (colW[c] or 60) - 4))
     fs:Show()
     return fs
 end
@@ -367,6 +382,7 @@ function History.Render()
         b.text:SetTextColor(Rgb(key == state.tab and C.accent or C.textDim))
     end
     RenderList()
+    LayoutColumns()
     if state.tab == "bests" then RenderBests() else RenderFight() end
 end
 
