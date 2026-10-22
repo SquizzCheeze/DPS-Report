@@ -40,6 +40,10 @@ New:
   only if it turned it on: logging started by Archon, /combatlog or another
   addon is left alone, and if you switch it off yourself it stays off for
   that visit. Off by default.
+- By ability: on an imported key or pull, each second of a player's graph
+  is split into their top abilities (and Other), with a coloured legend;
+  hover for the biggest three at that moment. Works for damage and healing.
+  (Needs a fresh export from the updated script.)
 - Imported keys and pulls are SAVED (the last 20, plus any you pin to keep
   forever) and listed under Keys, so they survive /reload and logging out.
 - Compare: pick another saved key or pull to show its bars in grey beside the

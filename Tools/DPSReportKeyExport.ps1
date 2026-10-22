@@ -102,7 +102,72 @@ public static class DRKeyExport
         return s;
     }
 
-    class Player { public int Index; public string Guid; public string Name = "?"; public string Spec = "0"; public long[] Dmg; public long[] Heal; }
+    class Player
+    {
+        public int Index; public string Guid; public string Name = "?"; public string Spec = "0";
+        public long[] Dmg; public long[] Heal;
+        // Per ability (spell ID -> per-second amounts), and cast times in tenths of a second.
+        public Dictionary<string, long[]> AbilDmg = new Dictionary<string, long[]>();
+        public Dictionary<string, long[]> AbilHeal = new Dictionary<string, long[]>();
+        public Dictionary<string, List<int>> Casts = new Dictionary<string, List<int>>();
+    }
+
+    static void AddAbil(Dictionary<string, long[]> d, string id, int sec, long v, int seconds)
+    {
+        if (v == 0) return;
+        long[] s;
+        if (!d.TryGetValue(id, out s)) { s = new long[seconds]; d[id] = s; }
+        s[sec] += v;
+    }
+
+    const int TOP_DAMAGE = 8, TOP_HEALING = 6, TOP_CASTS = 16;
+
+    // The `count` biggest series by total, biggest first.
+    static List<KeyValuePair<string, long[]>> Top(Dictionary<string, long[]> d, int count)
+    {
+        var list = new List<KeyValuePair<string, long[]>>(d);
+        list.Sort((x, y) => Sum(y.Value).CompareTo(Sum(x.Value)));
+        if (list.Count > count) list.RemoveRange(count, list.Count - count);
+        return list;
+    }
+
+    static long Sum(long[] v) { long s = 0; foreach (var x in v) s += x; return s; }
+
+    // An ability series for the chart: summed into `step`-second blocks and
+    // sent in THOUSANDS. The graph draws a few hundred columns at most, so
+    // per-second, exact per-ability values only made the paste huge (a 20-man
+    // 9-minute pull came to 452 KB). Totals (D/H) stay exact and per second.
+    static long[] Coarse(long[] v, int step)
+    {
+        var o = new long[(v.Length + step - 1) / step];
+        for (int i = 0; i < v.Length; i++) o[i / step] += v[i];
+        for (int i = 0; i < o.Length; i++) o[i] = (o[i] + 500) / 1000;
+        return o;
+    }
+
+    // Like Join, but a run of 2+ empty values becomes "_n" -- an ability is
+    // idle most of a fight, so this keeps the export small.
+    static string Packed(long[] v)
+    {
+        var sb = new StringBuilder();
+        int i = 0;
+        bool first = true;
+        while (i < v.Length)
+        {
+            if (!first) sb.Append(',');
+            first = false;
+            if (v[i] == 0)
+            {
+                int run = 0;
+                while (i < v.Length && v[i] == 0) { run++; i++; }
+                if (run >= 2) sb.Append('_').Append(run);
+                continue;
+            }
+            sb.Append(v[i].ToString(CultureInfo.InvariantCulture));
+            i++;
+        }
+        return sb.ToString();
+    }
 
     // Raid difficulty IDs, named. Anything not listed is not a raid (8 is a
     // Mythic+ key, 1/2/23 are dungeons).
@@ -281,7 +346,8 @@ public static class DRKeyExport
             bool heal = ev == "SPELL_HEAL" || ev == "SPELL_PERIODIC_HEAL";
             bool absorbed = ev == "SPELL_ABSORBED";
             bool summon = ev == "SPELL_SUMMON";
-            if (!(spellDmg || swing || heal || absorbed || summon)) continue;
+            bool cast = ev == "SPELL_CAST_SUCCESS";
+            if (!(spellDmg || swing || heal || absorbed || summon || cast)) continue;
 
             var fl = Split(l, b);
             if (fl.Count < 9) continue;
@@ -291,6 +357,19 @@ public static class DRKeyExport
             if (summon)
             {
                 if (players.ContainsKey(fl[1])) petOwner[fl[5]] = fl[1];
+                continue;
+            }
+
+            // The player's own casts (not pets'), for the cast timeline.
+            if (cast)
+            {
+                Player cp;
+                if (fl.Count > 9 && players.TryGetValue(fl[1], out cp))
+                {
+                    List<int> times;
+                    if (!cp.Casts.TryGetValue(fl[9], out times)) { times = new List<int>(); cp.Casts[fl[9]] = times; }
+                    times.Add((int)(at * 10));
+                }
                 continue;
             }
 
@@ -306,7 +385,12 @@ public static class DRKeyExport
                 if (n < 12) continue;
                 string absorber = fl[n - 10];
                 Player ap = Resolve(absorber, players, petOwner);
-                if (ap != null) ap.Heal[sec] += Num(fl[n - 3]);
+                if (ap != null)
+                {
+                    long amount = Num(fl[n - 3]);
+                    ap.Heal[sec] += amount;
+                    AddAbil(ap.AbilHeal, fl[n - 6], sec, amount, seconds);   // the shield's spell
+                }
                 continue;
             }
 
@@ -316,14 +400,25 @@ public static class DRKeyExport
 
             if (heal)
             {
-                if (fl.Count > 33) src.Heal[sec] += Math.Max(0, Num(fl[31]) - Num(fl[33]));
+                if (fl.Count > 33)
+                {
+                    long amount = Math.Max(0, Num(fl[31]) - Num(fl[33]));
+                    src.Heal[sec] += amount;
+                    AddAbil(src.AbilHeal, fl[9], sec, amount, seconds);
+                }
                 continue;
             }
 
             int destFlags = Flags(fl[7]);
             if ((destFlags & 0x10) != 0) continue;              // friendly target
             int a = swing ? 28 : 31;
-            if (fl.Count > a + 6) src.Dmg[sec] += Num(fl[a]) + Num(fl[a + 6]);
+            if (fl.Count > a + 6)
+            {
+                long amount = Num(fl[a]) + Num(fl[a + 6]);
+                src.Dmg[sec] += amount;
+                // Melee has no spell: 6603 is Auto Attack, so it gets a name and icon.
+                AddAbil(src.AbilDmg, swing ? "6603" : fl[9], sec, amount, seconds);
+            }
         }
 
         var sb = new StringBuilder();
@@ -337,6 +432,33 @@ public static class DRKeyExport
         {
             sb.Append("~D^").Append(p.Index).Append("^").Append(Join(p.Dmg));
             sb.Append("~H^").Append(p.Index).Append("^").Append(Join(p.Heal));
+        }
+        // Per ability (A^player^D|H^spellID^packed) and casts (C^player^spellID^tenths,...).
+        // Records an older DPS Report doesn't know are skipped by its parser.
+        // A^player^D|H^spellID^step^packed thousands-per-step-block.
+        int step = Math.Max(1, (seconds + 299) / 300);
+        bool big = order.Count > 5;
+        int topDamage = TOP_DAMAGE, topHealing = big ? 5 : TOP_HEALING, topCasts = big ? 10 : TOP_CASTS;
+        foreach (var p in order)
+        {
+            foreach (var kv in Top(p.AbilDmg, topDamage))
+                sb.Append("~A^").Append(p.Index).Append("^D^").Append(kv.Key).Append("^").Append(step)
+                  .Append("^").Append(Packed(Coarse(kv.Value, step)));
+            foreach (var kv in Top(p.AbilHeal, topHealing))
+                sb.Append("~A^").Append(p.Index).Append("^H^").Append(kv.Key).Append("^").Append(step)
+                  .Append("^").Append(Packed(Coarse(kv.Value, step)));
+            var casts = new List<KeyValuePair<string, List<int>>>(p.Casts);
+            casts.Sort((x, y) => y.Value.Count.CompareTo(x.Value.Count));
+            for (int c = 0; c < casts.Count && c < topCasts; c++)
+            {
+                sb.Append("~C^").Append(p.Index).Append("^").Append(casts[c].Key).Append("^");
+                var t = casts[c].Value;
+                for (int k = 0; k < t.Count; k++)
+                {
+                    if (k > 0) sb.Append(',');
+                    sb.Append(t[k].ToString(CultureInfo.InvariantCulture));
+                }
+            }
         }
         return sb.ToString();
     }

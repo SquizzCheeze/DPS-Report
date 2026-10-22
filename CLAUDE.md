@@ -130,6 +130,24 @@ another addon) is left alone. Ours found off mid-visit means someone stopped it:
 dropped and logging is not restarted until we leave. It reminds once if `advancedCombatLogging`
 is off. `LoggingCombat` is undocumented but live (BigWigs/Details/Blizzard's `/combatlog`).
 
+**Per-ability detail and casts in the export (2026-10-22, untested in game).** New records, skipped
+by older parsers:
+
+- **`A^player^D|H^spellID^step^packed`:** the top abilities per player — 8 damage plus 6 healing,
+  or 5 healing in groups over 5. Values are summed into `step`-second blocks
+  (`step = ceil(seconds/300)`) and sent in THOUSANDS; `_n` = n empty blocks. Melee is spell 6603;
+  shields use the absorb spell.
+- **`C^player^spellID^tenths,...`:** the player's own `SPELL_CAST_SUCCESS` (not pets'), top 16
+  spells by count (10 in groups over 5). Feeds the cast timeline (stage 2, not built yet).
+- **Why coarse:** per-second exact ability data made a 20-player 9.5-minute pull 452 KB; coarse
+  brought it to 277 KB, of which the exact D/H totals are 126 KB. Top 5 damage abilities covered
+  only 34% of a raider's damage, top 8 covers 51%; the rest is "Other".
+- **In game:** `ParseKey` expands A back to per-second (`p.abilities.D/H`) and keeps casts
+  (`p.casts`). The "By ability" toggle (`view.byAbility`, saved) makes `Render` hand off to
+  `Graph.RenderAbilities`: stacked textures per column (min 5px columns), Other = total − abilities,
+  a legend on the summary line, and `Graph.AbilityHover` for the top three at the cursor. Parsing
+  and coverage were checked out of game on a real Heroic raid pull.
+
 **Raid pulls, saving and comparing (2026-10-22, untested in game).**
 
 - **Raid pulls, exporter side:** `-Mode auto|key|raid|boss`; auto takes whichever finished

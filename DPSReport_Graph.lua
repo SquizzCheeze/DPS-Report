@@ -298,6 +298,15 @@ function Graph.Render()
     local width = plot:GetWidth()
     local height = plot:GetHeight()
 
+    -- By ability: an imported fight that carries per-ability detail.
+    if view.byAbility and f.imported and p and p.abilities then
+        for _, b in ipairs(bars) do b:Hide() end
+        for _, b in ipairs(ghosts) do b:Hide() end
+        Graph.RenderAbilities(f, p, m, width, height)
+        return
+    end
+    Graph.HideAbilities()
+
     -- Comparing: only between two imported fights, sharing one time axis.
     local cf = f.imported and view.compare ~= f and view.compare or nil
     local cp = cf and Graph.ComparePlayer(cf, p)
@@ -403,6 +412,10 @@ local function UpdateHover(_, elapsed)
     hoverIdle = false
     local x = GetCursorPosition() / plot:GetEffectiveScale() - plot:GetLeft()
     local i = math.min(Graph.cols, math.max(1, math.floor(x / Graph.colW) + 1))
+    if Graph.abilityCols then
+        hoverText:SetText(Graph.AbilityHover(i) or "")
+        return
+    end
     local bar = bars[i]
     local m = MetricDef()
     local v = bar and bar.value
@@ -470,6 +483,121 @@ function Graph.DrawBosses(f, width, span)
             tex:Hide()
         end
     end
+end
+
+-----------------------------------------------------------------------
+-- By ability (imported fights only): each column stacked by ability
+-----------------------------------------------------------------------
+
+local ABILITY_COLOURS = {
+    { 0.95, 0.55, 0.20 }, { 0.30, 0.65, 1.00 }, { 0.55, 0.85, 0.30 }, { 0.85, 0.40, 0.85 },
+    { 1.00, 0.85, 0.25 }, { 0.30, 0.85, 0.80 }, { 0.95, 0.35, 0.35 }, { 0.65, 0.55, 0.95 },
+}
+local OTHER_COLOUR = { 0.45, 0.45, 0.45 }
+local segments = {}            -- [column][slot] = texture
+local MIN_ABILITY_COLUMN = 5   -- wider than plain bars: up to 9 textures each
+
+function Graph.HideAbilities()
+    for _, col in pairs(segments) do
+        for _, t in pairs(col) do t:Hide() end
+    end
+    Graph.abilityCols = nil
+end
+
+local function AbilityName(id)
+    if id == 6603 then return "Melee" end
+    return (C_Spell.GetSpellName and C_Spell.GetSpellName(id)) or ("Spell " .. id)
+end
+
+function Graph.RenderAbilities(f, p, m, width, height)
+    Graph.HideAbilities()
+    local list = p.abilities[m.meter == "damage" and "D" or "H"] or {}
+    local totals = m.meter == "damage" and p.dps or p.hps
+    local n = f.n
+    local cols = math.max(1, math.min(n, math.floor(width / MIN_ABILITY_COLUMN)))
+    local colW = width / cols
+    local window = view.smooth
+
+    -- Each ability's per-second series, smoothed like the plain view.
+    local series = {}
+    for k, a in ipairs(list) do series[k] = Graph.Smoothed(a.per, n, window) end
+    local total = Graph.Smoothed(totals or {}, n, window)
+
+    local colData, peak = {}, 0
+    for i = 1, cols do
+        local from, to = Graph.Bucket(i, cols, n)
+        local entry = { from = from, parts = {} }
+        local sum = 0
+        for k = 1, #list do
+            local v = Graph.BucketValue(series[k], from, to, n, true)
+            entry.parts[k] = v
+            sum = sum + v
+        end
+        local all = Graph.BucketValue(total, from, to, n, true)
+        entry.other = math.max(0, all - sum)
+        entry.total = math.max(all, sum)
+        if entry.total > peak then peak = entry.total end
+        colData[i] = entry
+    end
+    local top = math.max(1, peak * 1.05 / view.zoom)
+
+    for i, entry in ipairs(colData) do
+        segments[i] = segments[i] or {}
+        local y = 0
+        local slots = #list + 1
+        for k = 1, slots do
+            local v = k <= #list and entry.parts[k] or entry.other
+            local h = math.min(height - y, v / top * height)
+            if h >= 0.5 then
+                local t = segments[i][k]
+                if not t then
+                    t = plot:CreateTexture(nil, "ARTWORK")
+                    segments[i][k] = t
+                end
+                local c = k <= #list and ABILITY_COLOURS[(k - 1) % #ABILITY_COLOURS + 1] or OTHER_COLOUR
+                t:SetColorTexture(c[1], c[2], c[3], 0.9)
+                t:ClearAllPoints()
+                t:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", (i - 1) * colW, y)
+                t:SetSize(math.max(1, colW - 1), h)
+                t:Show()
+                y = y + h
+            end
+        end
+    end
+    Graph.abilityCols, Graph.abilityList, Graph.cols, Graph.colW = colData, list, cols, colW
+
+    maxText:SetText(AbbreviateNumbers(top))
+    startText:SetText("0:00")
+    endText:SetText(Clock(n * SAMPLE_INTERVAL))
+    Graph.DrawBosses(f, width, n)
+
+    -- The legend, on the line above the plot.
+    if compareText then
+        local parts = {}
+        for k, a in ipairs(list) do
+            local c = ABILITY_COLOURS[(k - 1) % #ABILITY_COLOURS + 1]
+            parts[#parts + 1] = string.format("|cff%02x%02x%02x%s|r", c[1] * 255, c[2] * 255, c[3] * 255, AbilityName(a.id))
+        end
+        parts[#parts + 1] = "|cff737373Other|r"
+        compareText:SetText(table.concat(parts, "  "))
+    end
+end
+
+-- Hover text for a column in the ability view: its three biggest parts.
+function Graph.AbilityHover(i)
+    local entry = Graph.abilityCols and Graph.abilityCols[i]
+    if not entry then return nil end
+    local parts = {}
+    for k, a in ipairs(Graph.abilityList or {}) do
+        parts[#parts + 1] = { name = AbilityName(a.id), v = entry.parts[k] or 0 }
+    end
+    parts[#parts + 1] = { name = "Other", v = entry.other or 0 }
+    table.sort(parts, function(a, b) return a.v > b.v end)
+    local out = {}
+    for k = 1, math.min(3, #parts) do
+        if parts[k].v > 0 then out[#out + 1] = parts[k].name .. " " .. AbbreviateNumbers(math.floor(parts[k].v)) end
+    end
+    return Clock(entry.from * SAMPLE_INTERVAL) .. "   " .. table.concat(out, "  ")
 end
 
 -- One graph bar: a vertical StatusBar the game fills.
@@ -605,6 +733,41 @@ local function ParseKey(text)
             if p then
                 local per = NumberList(list)
                 if kind == "D" then p.dps = per else p.hps = per end
+            end
+        elseif kind == "A" then
+            -- One ability: A^player^D|H^spellID^step^packed, the values in
+            -- thousands per `step`-second block ("_n" = n empty blocks).
+            -- Spread back out to per-second amounts for the chart.
+            local idx, which, id, step, list = rest:match("^(%d+)%^([DH])%^(%d+)%^(%d+)%^(.*)$")
+            local p = idx and byIndex[idx]
+            if p then
+                step = tonumber(step) or 1
+                local per, block = {}, 0
+                for v in (list .. ","):gmatch("([^,]*),") do
+                    local run = v:match("^_(%d+)$")
+                    if run then
+                        block = block + tonumber(run)
+                    else
+                        block = block + 1
+                        local amount = (tonumber(v) or 0) * 1000 / step
+                        if amount > 0 then
+                            for s = (block - 1) * step + 1, block * step do per[s] = amount end
+                        end
+                    end
+                end
+                p.abilities = p.abilities or { D = {}, H = {} }
+                local listFor = p.abilities[which]
+                listFor[#listFor + 1] = { id = tonumber(id), per = per }
+            end
+        elseif kind == "C" then
+            -- Casts: C^player^spellID^tenths,... (for the cast timeline).
+            local idx, id, list = rest:match("^(%d+)%^(%d+)%^(.*)$")
+            local p = idx and byIndex[idx]
+            if p then
+                local times = {}
+                for v in list:gmatch("[^,]+") do times[#times + 1] = (tonumber(v) or 0) / 10 end
+                p.casts = p.casts or {}
+                p.casts[#p.casts + 1] = { id = tonumber(id), times = times }
             end
         end
     end
@@ -860,6 +1023,7 @@ local function Build()
     local db = GraphDB()
     view.metric = db.metric or view.metric
     view.smooth = db.smooth or view.smooth
+    view.byAbility = db.byAbility == true
 
     win = CreateFrame("Frame", "DPSReportGraphFrame", UIParent, "BackdropTemplate")
     win:SetSize(db.w or 520, db.h or 260)
@@ -875,7 +1039,7 @@ local function Build()
     win:SetClampedToScreen(true)
     win:SetMovable(true)
     win:SetResizable(true)
-    if win.SetResizeBounds then win:SetResizeBounds(480, 200, 1400, 800) end
+    if win.SetResizeBounds then win:SetResizeBounds(580, 200, 1400, 800) end
     win:EnableMouse(true)
     ns.ApplyBackdrop(win)
     tinsert(UISpecialFrames, "DPSReportGraphFrame")
@@ -968,6 +1132,19 @@ local function Build()
     smooth:SetWidth(46)
     smooth:SetPoint("RIGHT", zoomLabel, "LEFT", -8, 0)
     zoomLabel = smooth   -- the player button stops short of it
+
+    -- By ability: stack each column by ability (imported fights that carry
+    -- per-ability detail; anything else keeps the plain view).
+    local byAbility
+    byAbility = TextButton(bar2, "By ability", function()
+        view.byAbility = not view.byAbility
+        GraphDB().byAbility = view.byAbility
+        byAbility.text:SetText(view.byAbility and "|cffffd100By ability|r" or "By ability")
+        Graph.Render()
+    end)
+    byAbility.text:SetText(view.byAbility and "|cffffd100By ability|r" or "By ability")
+    byAbility:SetPoint("RIGHT", zoomLabel, "LEFT", -6, 0)
+    zoomLabel = byAbility
 
     playerBtn = TextButton(bar2, "", function(_, button)
         local f = ShownFight()
