@@ -44,6 +44,9 @@ New:
   is split into their top abilities (and Other), with a coloured legend;
   hover for the biggest three at that moment. Works for damage and healing.
   (Needs a fresh export from the updated script.)
+- Casts: on an imported key or pull, a cast timeline - one lane per spell
+  with its icon, a tick at every cast, boss pulls shaded. Hover a lane for
+  the spell, how many times it was cast and the nearest cast.
 - Imported keys and pulls are SAVED (the last 20, plus any you pin to keep
   forever) and listed under Keys, so they survive /reload and logging out.
 - Compare: pick another saved key or pull to show its bars in grey beside the

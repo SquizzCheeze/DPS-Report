@@ -138,7 +138,7 @@ by older parsers:
   (`step = ceil(seconds/300)`) and sent in THOUSANDS; `_n` = n empty blocks. Melee is spell 6603;
   shields use the absorb spell.
 - **`C^player^spellID^tenths,...`:** the player's own `SPELL_CAST_SUCCESS` (not pets'), top 16
-  spells by count (10 in groups over 5). Feeds the cast timeline (stage 2, not built yet).
+  spells by count (10 in groups over 5). Feeds the cast timeline: the "Casts" toggle (`view.casts`, saved, wins over By ability) hands `Render` to `Graph.RenderCasts` -- a lane per spell (most-cast first, lane height <= 20px), icon at the left, a 2px tick per cast, boss shading offset by the icon column (`DrawBosses` x0); `Graph.CastHover` picks lane by y and the nearest cast by x. Untested in game when written.
 - **Why coarse:** per-second exact ability data made a 20-player 9.5-minute pull 452 KB; coarse
   brought it to 277 KB, of which the exact D/H totals are 126 KB. Top 5 damage abilities covered
   only 34% of a raider's damage, top 8 covers 51%; the rest is "Other".

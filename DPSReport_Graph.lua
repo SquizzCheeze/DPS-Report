@@ -299,6 +299,15 @@ function Graph.Render()
     local height = plot:GetHeight()
 
     -- By ability: an imported fight that carries per-ability detail.
+    -- Casts: an imported fight's cast timeline (wins over By ability).
+    if view.casts and f.imported and p and p.casts then
+        for _, b in ipairs(bars) do b:Hide() end
+        for _, b in ipairs(ghosts) do b:Hide() end
+        Graph.HideAbilities()
+        Graph.RenderCasts(f, p, width, height)
+        return
+    end
+    Graph.HideCasts()
     if view.byAbility and f.imported and p and p.abilities then
         for _, b in ipairs(bars) do b:Hide() end
         for _, b in ipairs(ghosts) do b:Hide() end
@@ -411,6 +420,12 @@ local function UpdateHover(_, elapsed)
     end
     hoverIdle = false
     local x = GetCursorPosition() / plot:GetEffectiveScale() - plot:GetLeft()
+    if Graph.castLanes then
+        local _, cy = GetCursorPosition()
+        local y = plot:GetTop() - cy / plot:GetEffectiveScale()
+        hoverText:SetText(Graph.CastHover(x, y) or "")
+        return
+    end
     local i = math.min(Graph.cols, math.max(1, math.floor(x / Graph.colW) + 1))
     if Graph.abilityCols then
         hoverText:SetText(Graph.AbilityHover(i) or "")
@@ -462,8 +477,9 @@ local bossShades = {}
 
 -- Boss pulls shaded behind the bars (imported keys only). `span` is the time
 -- axis in seconds: the fight's own length, or longer while comparing.
-function Graph.DrawBosses(f, width, span)
+function Graph.DrawBosses(f, width, span, x0)
     span = span or f.n
+    x0 = x0 or 0
     local list = f.imported and f.bosses or {}
     for i = 1, math.max(#list, #bossShades) do
         local boss, tex = list[i], bossShades[i]
@@ -473,8 +489,8 @@ function Graph.DrawBosses(f, width, span)
                 bossShades[i] = tex
             end
             tex:ClearAllPoints()
-            tex:SetPoint("TOPLEFT", plot, "TOPLEFT", boss.start / span * width, 0)
-            tex:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", boss.start / span * width, 0)
+            tex:SetPoint("TOPLEFT", plot, "TOPLEFT", x0 + boss.start / span * width, 0)
+            tex:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", x0 + boss.start / span * width, 0)
             tex:SetWidth(math.max(1, (boss.stop - boss.start) / span * width))
             local c = boss.kill and C.accent or C.danger
             tex:SetColorTexture(c[1], c[2], c[3], 0.12)
@@ -583,6 +599,93 @@ function Graph.RenderAbilities(f, p, m, width, height)
     end
 end
 
+-----------------------------------------------------------------------
+-- Casts (imported fights only): one lane per spell, a tick per cast
+-----------------------------------------------------------------------
+
+local lanes, ticks = {}, {}
+local MAX_LANE = 20
+
+function Graph.HideCasts()
+    for _, l in ipairs(lanes) do l.icon:Hide() l.band:Hide() end
+    for _, t in ipairs(ticks) do t:Hide() end
+    Graph.castLanes = nil
+end
+
+function Graph.RenderCasts(f, p, width, height)
+    Graph.HideCasts()
+    local list = {}
+    for _, c in ipairs(p.casts) do list[#list + 1] = c end
+    table.sort(list, function(a, b) return #a.times > #b.times end)
+    local laneH = math.min(MAX_LANE, height / math.max(1, #list))
+    local iconSize = math.max(8, laneH - 2)
+    local n = math.max(1, f.n)
+    local span = width - iconSize - 4          -- the lanes start right of the icons
+    local left = iconSize + 4
+    local used = 0
+    for k, c in ipairs(list) do
+        local l = lanes[k]
+        if not l then
+            l = { band = plot:CreateTexture(nil, "BACKGROUND", nil, 2), icon = plot:CreateTexture(nil, "ARTWORK") }
+            lanes[k] = l
+        end
+        local top = -(k - 1) * laneH
+        l.band:ClearAllPoints()
+        l.band:SetPoint("TOPLEFT", plot, "TOPLEFT", 0, top)
+        l.band:SetPoint("TOPRIGHT", plot, "TOPRIGHT", 0, top)
+        l.band:SetHeight(laneH)
+        l.band:SetColorTexture(1, 1, 1, k % 2 == 0 and 0.04 or 0)
+        l.band:Show()
+        l.icon:SetTexture(C_Spell.GetSpellTexture(c.id) or 134400)
+        l.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        l.icon:SetSize(iconSize, iconSize)
+        l.icon:ClearAllPoints()
+        l.icon:SetPoint("TOPLEFT", plot, "TOPLEFT", 1, top - (laneH - iconSize) / 2)
+        l.icon:Show()
+        local colour = ABILITY_COLOURS[(k - 1) % #ABILITY_COLOURS + 1]
+        for _, at in ipairs(c.times) do
+            used = used + 1
+            local t = ticks[used]
+            if not t then
+                t = plot:CreateTexture(nil, "ARTWORK")
+                ticks[used] = t
+            end
+            t:SetColorTexture(colour[1], colour[2], colour[3], 0.95)
+            t:ClearAllPoints()
+            t:SetPoint("TOPLEFT", plot, "TOPLEFT", left + math.min(1, at / n) * span, top - 2)
+            t:SetSize(2, math.max(2, laneH - 4))
+            t:Show()
+        end
+    end
+    Graph.castLanes = { list = list, laneH = laneH, left = left, span = span, n = n }
+    maxText:SetText("")
+    startText:SetText("0:00")
+    endText:SetText(Clock(f.n * SAMPLE_INTERVAL))
+    Graph.DrawBosses(f, span, f.n, left)
+    Graph.cols, Graph.colW = 1, width
+    if compareText then
+        compareText:SetText(string.format("|cffbbbbbbCasts|r  the %d most-cast spells, most first. Hover a lane for details.",
+            #list))
+    end
+end
+
+-- Hover text in the casts view: the lane's spell, its count, and the
+-- nearest cast to the cursor.
+function Graph.CastHover(x, y)
+    local cl = Graph.castLanes
+    if not cl then return nil end
+    local k = math.floor(y / cl.laneH) + 1
+    local c = cl.list[k]
+    if not c then return nil end
+    local at = math.max(0, (x - cl.left) / cl.span * cl.n)
+    local nearest
+    for _, t in ipairs(c.times) do
+        if not nearest or math.abs(t - at) < math.abs(nearest - at) then nearest = t end
+    end
+    return string.format("%s  %s   %d casts%s", Clock(at), AbilityName(c.id), #c.times,
+        nearest and ("   nearest " .. Clock(nearest)) or "")
+end
+
 -- Hover text for a column in the ability view: its three biggest parts.
 function Graph.AbilityHover(i)
     local entry = Graph.abilityCols and Graph.abilityCols[i]
@@ -652,7 +755,11 @@ function Graph.CompareSummary(f, p, cf, cp, m)
         -- By ability is on but this fight can't show it: say why rather than
         -- quietly drawing the plain graph.
         local note = ""
-        if view.byAbility then
+        if view.casts and not (f.imported and p and p.casts) then
+            note = f.imported
+                and "|cffffd100No casts in this import|r -- run Export Last Key again and re-import."
+                or "|cffffd100Casts|r works on imported runs only."
+        elseif view.byAbility then
             if not f.imported then
                 note = "|cffffd100By ability|r works on imported runs only (the game hides abilities live)."
             elseif p and not p.abilities then
@@ -1039,6 +1146,7 @@ local function Build()
     view.metric = db.metric or view.metric
     view.smooth = db.smooth or view.smooth
     view.byAbility = db.byAbility == true
+    view.casts = db.casts == true
 
     win = CreateFrame("Frame", "DPSReportGraphFrame", UIParent, "BackdropTemplate")
     win:SetSize(db.w or 520, db.h or 260)
@@ -1054,7 +1162,7 @@ local function Build()
     win:SetClampedToScreen(true)
     win:SetMovable(true)
     win:SetResizable(true)
-    if win.SetResizeBounds then win:SetResizeBounds(580, 200, 1400, 800) end
+    if win.SetResizeBounds then win:SetResizeBounds(630, 200, 1400, 800) end
     win:EnableMouse(true)
     ns.ApplyBackdrop(win)
     tinsert(UISpecialFrames, "DPSReportGraphFrame")
@@ -1160,6 +1268,18 @@ local function Build()
     byAbility.text:SetText(view.byAbility and "|cffffd100By ability|r" or "By ability")
     byAbility:SetPoint("RIGHT", zoomLabel, "LEFT", -6, 0)
     zoomLabel = byAbility
+
+    -- Casts: the cast timeline (imported fights).
+    local casts
+    casts = TextButton(bar2, "Casts", function()
+        view.casts = not view.casts
+        GraphDB().casts = view.casts
+        casts.text:SetText(view.casts and "|cffffd100Casts|r" or "Casts")
+        Graph.Render()
+    end)
+    casts.text:SetText(view.casts and "|cffffd100Casts|r" or "Casts")
+    casts:SetPoint("RIGHT", zoomLabel, "LEFT", -6, 0)
+    zoomLabel = casts
 
     playerBtn = TextButton(bar2, "", function(_, button)
         local f = ShownFight()
