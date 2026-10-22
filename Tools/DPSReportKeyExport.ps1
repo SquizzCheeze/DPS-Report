@@ -110,6 +110,31 @@ public static class DRKeyExport
         public Dictionary<string, long[]> AbilDmg = new Dictionary<string, long[]>();
         public Dictionary<string, long[]> AbilHeal = new Dictionary<string, long[]>();
         public Dictionary<string, List<int>> Casts = new Dictionary<string, List<int>>();
+        // Aura uptime: open applications (spell|target -> start) and closed
+        // intervals per spell, in tenths of a second.
+        public Dictionary<string, int> AuraOpen = new Dictionary<string, int>();
+        public Dictionary<string, List<int[]>> Uptime = new Dictionary<string, List<int[]>>();
+    }
+
+    static void AddUptime(Player p, string spell, int from, int to)
+    {
+        if (to <= from) return;
+        List<int[]> list;
+        if (!p.Uptime.TryGetValue(spell, out list)) { list = new List<int[]>(); p.Uptime[spell] = list; }
+        list.Add(new int[] { from, to });
+    }
+
+    // Overlapping intervals (one spell on several targets) merged into one bar.
+    static List<int[]> Merged(List<int[]> list)
+    {
+        list.Sort((x, y) => x[0].CompareTo(y[0]));
+        var o = new List<int[]>();
+        foreach (var iv in list)
+        {
+            if (o.Count > 0 && iv[0] <= o[o.Count - 1][1]) o[o.Count - 1][1] = Math.Max(o[o.Count - 1][1], iv[1]);
+            else o.Add(new int[] { iv[0], iv[1] });
+        }
+        return o;
     }
 
     static void AddAbil(Dictionary<string, long[]> d, string id, int sec, long v, int seconds)
@@ -347,7 +372,8 @@ public static class DRKeyExport
             bool absorbed = ev == "SPELL_ABSORBED";
             bool summon = ev == "SPELL_SUMMON";
             bool cast = ev == "SPELL_CAST_SUCCESS";
-            if (!(spellDmg || swing || heal || absorbed || summon || cast)) continue;
+            bool auraOn = ev == "SPELL_AURA_APPLIED", auraOff = ev == "SPELL_AURA_REMOVED";
+            if (!(spellDmg || swing || heal || absorbed || summon || cast || auraOn || auraOff)) continue;
 
             var fl = Split(l, b);
             if (fl.Count < 9) continue;
@@ -357,6 +383,29 @@ public static class DRKeyExport
             if (summon)
             {
                 if (players.ContainsKey(fl[1])) petOwner[fl[5]] = fl[1];
+                continue;
+            }
+
+            // Auras the player applied (DoTs, HoTs, buffs, channels): when each
+            // was up, per spell and target, for the timeline's uptime bars.
+            if (auraOn || auraOff)
+            {
+                Player ap;
+                if (fl.Count > 9 && players.TryGetValue(fl[1], out ap))
+                {
+                    string key = fl[9] + "|" + fl[5];
+                    int tenth = (int)(at * 10);
+                    if (auraOn) { if (!ap.AuraOpen.ContainsKey(key)) ap.AuraOpen[key] = tenth; }
+                    else
+                    {
+                        int from;
+                        if (ap.AuraOpen.TryGetValue(key, out from))
+                        {
+                            ap.AuraOpen.Remove(key);
+                            AddUptime(ap, fl[9], from, tenth);
+                        }
+                    }
+                }
                 continue;
             }
 
@@ -449,8 +498,23 @@ public static class DRKeyExport
                   .Append("^").Append(Packed(Coarse(kv.Value, step)));
             var casts = new List<KeyValuePair<string, List<int>>>(p.Casts);
             casts.Sort((x, y) => y.Value.Count.CompareTo(x.Value.Count));
+            // Auras still up when the fight ended run to the end.
+            foreach (var kv in p.AuraOpen) AddUptime(p, kv.Key.Split('|')[0], kv.Value, seconds * 10);
+            p.AuraOpen.Clear();
             for (int c = 0; c < casts.Count && c < topCasts; c++)
             {
+                // U^player^spellID^from-to,... (tenths): when that spell's aura was up.
+                List<int[]> up;
+                if (p.Uptime.TryGetValue(casts[c].Key, out up))
+                {
+                    sb.Append("~U^").Append(p.Index).Append("^").Append(casts[c].Key).Append("^");
+                    var merged = Merged(up);
+                    for (int k = 0; k < merged.Count; k++)
+                    {
+                        if (k > 0) sb.Append(',');
+                        sb.Append(merged[k][0]).Append('-').Append(merged[k][1]);
+                    }
+                }
                 sb.Append("~C^").Append(p.Index).Append("^").Append(casts[c].Key).Append("^");
                 var t = casts[c].Value;
                 for (int k = 0; k < t.Count; k++)

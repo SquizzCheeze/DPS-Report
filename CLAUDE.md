@@ -138,7 +138,27 @@ by older parsers:
   (`step = ceil(seconds/300)`) and sent in THOUSANDS; `_n` = n empty blocks. Melee is spell 6603;
   shields use the absorb spell.
 - **`C^player^spellID^tenths,...`:** the player's own `SPELL_CAST_SUCCESS` (not pets'), top 16
-  spells by count (10 in groups over 5). Feeds the cast timeline: the "Casts" toggle (`view.casts`, saved, wins over By ability) hands `Render` to `Graph.RenderCasts` -- a lane per spell (most-cast first, lane height <= 20px), icon at the left, a 2px tick per cast, boss shading offset by the icon column (`DrawBosses` x0); `Graph.CastHover` picks lane by y and the nearest cast by x. Untested in game when written.
+  spells by count (10 in groups over 5).
+- **`U^player^spellID^from-to,...`** (tenths): when that spell's aura was up — the player's own
+  `SPELL_AURA_APPLIED`/`REMOVED`, keyed spell+target, still-open ones closed at the fight's end,
+  overlaps merged (`Merged`). Only sent for spells that also have a C record. +8 KB on a 20-man pull.
+- **The timeline (`Graph.RenderCasts`, the "Casts" toggle, `view.casts`, saved, wins over By
+  ability)** — layout after the user's Rival screenshot (2026-10-22; ideas only, Rival is
+  all-rights-reserved):
+  - the stacked graph in the top 38% (`RenderAbilities(..., base)` draws at a y offset; plain
+    grey if the import has no A records);
+  - an axis row, then 18px lanes with icon and name in a 140px column;
+  - each lane shows uptime bars (alpha .45) under the cast marks: icons when the window is ≤ 2 min,
+    2px ticks otherwise.
+  - **The window:** `view.castWindow` (all/15/30/60/120s, default 30, saved, cycled by the
+    "Window:" button shown only in Casts) starting at `view.castStart`, shaded on the graph.
+  - **Controls:** the wheel scrolls time, or the lanes (`view.laneScroll`) over the names column;
+    clicking the graph centres the window (`TimelineWheel`/`TimelineClick`). Both reset when the
+    fight or player changes.
+  - **Hover (`CastHover`):** the graph's top three, or the lane's spell, casts, nearest cast and
+    up/down + uptime %.
+  - **Tested out of game:** run through a mocked window in fengari on the Ula'tek pull — render,
+    hover, wheel and click.
 - **Why coarse:** per-second exact ability data made a 20-player 9.5-minute pull 452 KB; coarse
   brought it to 277 KB, of which the exact D/H totals are 126 KB. Top 5 damage abilities covered
   only 34% of a raider's damage, top 8 covers 51%; the rest is "Other".

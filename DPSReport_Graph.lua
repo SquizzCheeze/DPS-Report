@@ -269,6 +269,7 @@ function Graph.Render()
         local on = b.metric == view.metric
         b.text:SetTextColor(Rgb(on and C.accent or C.textDim))
     end
+    if Graph.windowBtn then Graph.windowBtn:SetShown(view.casts == true) end
 
     if not f then
         fightLabel:SetText("No fights yet")
@@ -304,7 +305,7 @@ function Graph.Render()
         for _, b in ipairs(bars) do b:Hide() end
         for _, b in ipairs(ghosts) do b:Hide() end
         Graph.HideAbilities()
-        Graph.RenderCasts(f, p, width, height)
+        Graph.RenderCasts(f, p, m, width, height)
         return
     end
     Graph.HideCasts()
@@ -414,7 +415,7 @@ local function UpdateHover(_, elapsed)
     if not (f and plot:IsMouseOver() and Graph.cols) then
         if not hoverIdle then
             hoverIdle = true
-            hoverText:SetText("Hover the graph for a value.")
+            hoverText:SetText(Graph.idleText or "Hover the graph for a value.")
         end
         return
     end
@@ -477,9 +478,9 @@ local bossShades = {}
 
 -- Boss pulls shaded behind the bars (imported keys only). `span` is the time
 -- axis in seconds: the fight's own length, or longer while comparing.
-function Graph.DrawBosses(f, width, span, x0)
+function Graph.DrawBosses(f, width, span, x0, bottom)
     span = span or f.n
-    x0 = x0 or 0
+    x0, bottom = x0 or 0, bottom or 0
     local list = f.imported and f.bosses or {}
     for i = 1, math.max(#list, #bossShades) do
         local boss, tex = list[i], bossShades[i]
@@ -490,7 +491,7 @@ function Graph.DrawBosses(f, width, span, x0)
             end
             tex:ClearAllPoints()
             tex:SetPoint("TOPLEFT", plot, "TOPLEFT", x0 + boss.start / span * width, 0)
-            tex:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", x0 + boss.start / span * width, 0)
+            tex:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", x0 + boss.start / span * width, bottom)
             tex:SetWidth(math.max(1, (boss.stop - boss.start) / span * width))
             local c = boss.kill and C.accent or C.danger
             tex:SetColorTexture(c[1], c[2], c[3], 0.12)
@@ -525,9 +526,10 @@ local function AbilityName(id)
     return (C_Spell.GetSpellName and C_Spell.GetSpellName(id)) or ("Spell " .. id)
 end
 
-function Graph.RenderAbilities(f, p, m, width, height)
+function Graph.RenderAbilities(f, p, m, width, height, base)
+    base = base or 0
     Graph.HideAbilities()
-    local list = p.abilities[m.meter == "damage" and "D" or "H"] or {}
+    local list = p.abilities and p.abilities[m.meter == "damage" and "D" or "H"] or {}
     local totals = m.meter == "damage" and p.dps or p.hps
     local n = f.n
     local cols = math.max(1, math.min(n, math.floor(width / MIN_ABILITY_COLUMN)))
@@ -573,7 +575,7 @@ function Graph.RenderAbilities(f, p, m, width, height)
                 local c = k <= #list and ABILITY_COLOURS[(k - 1) % #ABILITY_COLOURS + 1] or OTHER_COLOUR
                 t:SetColorTexture(c[1], c[2], c[3], 0.9)
                 t:ClearAllPoints()
-                t:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", (i - 1) * colW, y)
+                t:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", (i - 1) * colW, base + y)
                 t:SetSize(math.max(1, colW - 1), h)
                 t:Show()
                 y = y + h
@@ -585,105 +587,261 @@ function Graph.RenderAbilities(f, p, m, width, height)
     maxText:SetText(AbbreviateNumbers(top))
     startText:SetText("0:00")
     endText:SetText(Clock(n * SAMPLE_INTERVAL))
-    Graph.DrawBosses(f, width, n)
+    Graph.DrawBosses(f, width, n, 0, base)
 
     -- The legend, on the line above the plot.
     if compareText then
         local parts = {}
         for k, a in ipairs(list) do
             local c = ABILITY_COLOURS[(k - 1) % #ABILITY_COLOURS + 1]
-            parts[#parts + 1] = string.format("|cff%02x%02x%02x%s|r", c[1] * 255, c[2] * 255, c[3] * 255, AbilityName(a.id))
+            parts[#parts + 1] = string.format("|cff%02x%02x%02x%s|r", math.floor(c[1] * 255), math.floor(c[2] * 255), math.floor(c[3] * 255), AbilityName(a.id))
         end
         parts[#parts + 1] = "|cff737373Other|r"
         compareText:SetText(table.concat(parts, "  "))
     end
 end
 
------------------------------------------------------------------------
--- Casts (imported fights only): one lane per spell, a tick per cast
------------------------------------------------------------------------
+-- The Casts view is a TIMELINE: the stacked ability graph across the top of
+-- the plot, and under it one lane per spell (icon and name on the left), with
+-- an icon or tick at every cast and a bar wherever that spell's aura was up
+-- (DoTs, HoTs, buffs, channels). The lanes show a WINDOW of the fight
+-- (view.castWindow seconds, 0 = all of it) starting at view.castStart: the
+-- wheel scrolls it, clicking the graph centres it there, and the graph shades
+-- the part on show. The wheel over the names scrolls the lanes instead.
 
-local lanes, ticks = {}, {}
-local MAX_LANE = 20
+local LABEL_W, LANE_H, AXIS_H = 140, 18, 16
+local CAST_WINDOWS = { 0, 15, 30, 60, 120 }
+local lanes, marks, bars2, axisLabels = {}, {}, {}, {}
+local windowShade
 
 function Graph.HideCasts()
-    for _, l in ipairs(lanes) do l.icon:Hide() l.band:Hide() end
-    for _, t in ipairs(ticks) do t:Hide() end
-    Graph.castLanes = nil
+    for _, l in ipairs(lanes) do l.band:Hide() l.icon:Hide() l.name:Hide() end
+    for _, t in ipairs(marks) do t:Hide() end
+    for _, t in ipairs(bars2) do t:Hide() end
+    for _, t in ipairs(axisLabels) do t:Hide() end
+    if windowShade then windowShade:Hide() end
+    if Graph.zeroText then Graph.zeroText:Show() end
+    if Graph.idleText and hoverText then hoverText:SetText("Hover the graph for a value.") end
+    Graph.castLanes, Graph.idleText = nil, nil
 end
 
-function Graph.RenderCasts(f, p, width, height)
-    Graph.HideCasts()
-    local list = {}
-    for _, c in ipairs(p.casts) do list[#list + 1] = c end
-    table.sort(list, function(a, b) return #a.times > #b.times end)
-    local laneH = math.min(MAX_LANE, height / math.max(1, #list))
-    local iconSize = math.max(8, laneH - 2)
-    local n = math.max(1, f.n)
-    local span = width - iconSize - 4          -- the lanes start right of the icons
-    local left = iconSize + 4
-    local used = 0
-    for k, c in ipairs(list) do
-        local l = lanes[k]
-        if not l then
-            l = { band = plot:CreateTexture(nil, "BACKGROUND", nil, 2), icon = plot:CreateTexture(nil, "ARTWORK") }
-            lanes[k] = l
+function Graph.WindowLabel()
+    local w = view.castWindow or 0
+    return w == 0 and "Window: all" or ("Window: " .. (w >= 60 and (w / 60) .. "m" or w .. "s"))
+end
+
+function Graph.NextWindow()
+    local w = view.castWindow or 0
+    for i, v in ipairs(CAST_WINDOWS) do
+        if v == w then
+            view.castWindow = CAST_WINDOWS[i % #CAST_WINDOWS + 1]
+            return
         end
-        local top = -(k - 1) * laneH
+    end
+    view.castWindow = 0
+end
+
+local function Pool(list, i, layer, sub)
+    local t = list[i]
+    if not t then
+        t = plot:CreateTexture(nil, layer, nil, sub)
+        list[i] = t
+    end
+    return t
+end
+
+function Graph.RenderCasts(f, p, m, width, height)
+    if Graph.castFight ~= f or Graph.castPlayer ~= p then
+        Graph.castFight, Graph.castPlayer = f, p
+        view.castStart, view.laneScroll = 0, 0
+    end
+    Graph.HideCasts()
+    local n = math.max(1, f.n)
+    local graphH = math.floor(math.max(60, height * 0.38))
+    local laneTop = graphH + AXIS_H               -- from the plot's top
+    local laneArea = height - laneTop
+
+    -- The graph, in the top part.
+    Graph.RenderAbilities(f, p, m, width, graphH, height - graphH)
+    if Graph.zeroText then Graph.zeroText:Hide() end
+
+    -- The window on show.
+    local winLen = view.castWindow or 0
+    if winLen <= 0 or winLen >= n then winLen = n end
+    local winStart = math.max(0, math.min(view.castStart or 0, n - winLen))
+    view.castStart = winStart
+    local winEnd = winStart + winLen
+    local left, span = LABEL_W, width - LABEL_W
+    local function X(t) return left + (t - winStart) / winLen * span end
+
+    if winLen < n then
+        windowShade = windowShade or plot:CreateTexture(nil, "OVERLAY")
+        windowShade:SetColorTexture(1, 1, 1, 0.10)
+        windowShade:ClearAllPoints()
+        windowShade:SetPoint("TOPLEFT", plot, "TOPLEFT", winStart / n * width, 0)
+        windowShade:SetSize(math.max(2, winLen / n * width), graphH)
+        windowShade:Show()
+    end
+
+    -- Time labels over the lanes.
+    local step = winLen / 6
+    for i = 0, 6 do
+        local fs = axisLabels[i + 1]
+        if not fs then
+            fs = plot:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+            axisLabels[i + 1] = fs
+        end
+        fs:ClearAllPoints()
+        local at = winStart + i * step
+        fs:SetPoint("TOP", plot, "TOPLEFT", X(at), -graphH - 2)
+        fs:SetText(Clock(at))
+        fs:SetShown(i < 6)
+    end
+
+    -- Lanes: most-cast first, scrolled by view.laneScroll.
+    local list = {}
+    for _, c in ipairs(p.casts) do
+        c.uptime = p.uptimes and p.uptimes[c.id]
+        list[#list + 1] = c
+    end
+    table.sort(list, function(a, b) return #a.times > #b.times end)
+    local fits = math.max(1, math.floor(laneArea / LANE_H))
+    local first = math.max(0, math.min(view.laneScroll or 0, #list - fits))
+    view.laneScroll = first
+    local iconMode = winLen <= 120
+    local mi, bi = 0, 0
+    for row = 1, math.min(fits, #list - first) do
+        local k = first + row
+        local c = list[k]
+        local l = lanes[row]
+        if not l then
+            l = { band = plot:CreateTexture(nil, "BACKGROUND", nil, 2), icon = plot:CreateTexture(nil, "ARTWORK"),
+                  name = plot:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall") }
+            l.name:SetJustifyH("LEFT")
+            l.name:SetWordWrap(false)
+            lanes[row] = l
+        end
+        local top = -(laneTop + (row - 1) * LANE_H)
         l.band:ClearAllPoints()
         l.band:SetPoint("TOPLEFT", plot, "TOPLEFT", 0, top)
         l.band:SetPoint("TOPRIGHT", plot, "TOPRIGHT", 0, top)
-        l.band:SetHeight(laneH)
-        l.band:SetColorTexture(1, 1, 1, k % 2 == 0 and 0.04 or 0)
+        l.band:SetHeight(LANE_H)
+        l.band:SetColorTexture(1, 1, 1, k % 2 == 0 and 0.05 or 0.02)
         l.band:Show()
         l.icon:SetTexture(C_Spell.GetSpellTexture(c.id) or 134400)
         l.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-        l.icon:SetSize(iconSize, iconSize)
+        l.icon:SetSize(LANE_H - 2, LANE_H - 2)
         l.icon:ClearAllPoints()
-        l.icon:SetPoint("TOPLEFT", plot, "TOPLEFT", 1, top - (laneH - iconSize) / 2)
+        l.icon:SetPoint("TOPLEFT", plot, "TOPLEFT", 2, top - 1)
         l.icon:Show()
+        l.name:ClearAllPoints()
+        l.name:SetPoint("LEFT", l.icon, "RIGHT", 4, 0)
+        l.name:SetWidth(LABEL_W - LANE_H - 8)
+        l.name:SetText(AbilityName(c.id))
+        l.name:Show()
+
         local colour = ABILITY_COLOURS[(k - 1) % #ABILITY_COLOURS + 1]
-        for _, at in ipairs(c.times) do
-            used = used + 1
-            local t = ticks[used]
-            if not t then
-                t = plot:CreateTexture(nil, "ARTWORK")
-                ticks[used] = t
+        -- Uptime bars, under the cast marks.
+        for _, iv in ipairs(c.uptime or {}) do
+            local a, b = math.max(iv[1], winStart), math.min(iv[2], winEnd)
+            if b > a then
+                bi = bi + 1
+                local t = Pool(bars2, bi, "ARTWORK", 1)
+                t:SetColorTexture(colour[1], colour[2], colour[3], 0.45)
+                t:ClearAllPoints()
+                t:SetPoint("TOPLEFT", plot, "TOPLEFT", X(a), top - 4)
+                t:SetSize(math.max(1, X(b) - X(a)), LANE_H - 8)
+                t:Show()
             end
-            t:SetColorTexture(colour[1], colour[2], colour[3], 0.95)
-            t:ClearAllPoints()
-            t:SetPoint("TOPLEFT", plot, "TOPLEFT", left + math.min(1, at / n) * span, top - 2)
-            t:SetSize(2, math.max(2, laneH - 4))
-            t:Show()
+        end
+        -- A mark per cast: its icon when zoomed in, a tick when not.
+        for _, at in ipairs(c.times) do
+            if at >= winStart and at <= winEnd then
+                mi = mi + 1
+                local t = Pool(marks, mi, "ARTWORK", 3)
+                t:ClearAllPoints()
+                if iconMode then
+                    t:SetTexture(C_Spell.GetSpellTexture(c.id) or 134400)
+                    t:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+                    t:SetVertexColor(1, 1, 1, 1)
+                    t:SetSize(LANE_H - 4, LANE_H - 4)
+                    t:SetPoint("TOPLEFT", plot, "TOPLEFT", X(at) - (LANE_H - 4) / 2, top - 2)
+                else
+                    t:SetColorTexture(colour[1], colour[2], colour[3], 0.95)
+                    t:SetSize(2, LANE_H - 4)
+                    t:SetPoint("TOPLEFT", plot, "TOPLEFT", X(at), top - 2)
+                end
+                t:Show()
+            end
         end
     end
-    Graph.castLanes = { list = list, laneH = laneH, left = left, span = span, n = n }
-    maxText:SetText("")
-    startText:SetText("0:00")
-    endText:SetText(Clock(f.n * SAMPLE_INTERVAL))
-    Graph.DrawBosses(f, span, f.n, left)
-    Graph.cols, Graph.colW = 1, width
-    if compareText then
-        compareText:SetText(string.format("|cffbbbbbbCasts|r  the %d most-cast spells, most first. Hover a lane for details.",
-            #list))
-    end
+
+    Graph.castLanes = { list = list, first = first, graphH = graphH, laneTop = laneTop, left = left,
+                        span = span, n = n, winStart = winStart, winLen = winLen, width = width }
+    startText:SetText(Clock(winStart))
+    endText:SetText(Clock(winEnd))
+    local more = #list > fits and string.format("   |cff888888spells %d-%d of %d (wheel over the names)|r",
+        first + 1, first + math.min(fits, #list - first), #list) or ""
+    Graph.idleText = "Hover for details. Wheel scrolls the timeline; click the graph to jump there." .. more
+    hoverText:SetText(Graph.idleText)
 end
 
--- Hover text in the casts view: the lane's spell, its count, and the
--- nearest cast to the cursor.
+-- Hover text in the timeline: the graph's top three, or the lane's spell
+-- with its casts and whether its aura was up.
 function Graph.CastHover(x, y)
     local cl = Graph.castLanes
     if not cl then return nil end
-    local k = math.floor(y / cl.laneH) + 1
-    local c = cl.list[k]
+    if y < cl.graphH then
+        local i = math.min(Graph.cols or 1, math.max(1, math.floor(x / (Graph.colW or 1)) + 1))
+        return Graph.AbilityHover(i)
+    end
+    local row = math.floor((y - cl.laneTop) / LANE_H) + 1
+    local c = row >= 1 and cl.list[cl.first + row]
     if not c then return nil end
-    local at = math.max(0, (x - cl.left) / cl.span * cl.n)
+    local at = cl.winStart + math.max(0, (x - cl.left) / cl.span * cl.winLen)
     local nearest
     for _, t in ipairs(c.times) do
         if not nearest or math.abs(t - at) < math.abs(nearest - at) then nearest = t end
     end
-    return string.format("%s  %s   %d casts%s", Clock(at), AbilityName(c.id), #c.times,
-        nearest and ("   nearest " .. Clock(nearest)) or "")
+    local up, total = false, 0
+    for _, iv in ipairs(c.uptime or {}) do
+        total = total + (iv[2] - iv[1])
+        if at >= iv[1] and at <= iv[2] then up = true end
+    end
+    local upText = ""
+    if c.uptime then
+        upText = string.format("   %s, %.0f%% uptime", up and "|cff40ff40up|r" or "down", total / cl.n * 100)
+    end
+    return string.format("%s  %s   %d casts%s%s", Clock(at), AbilityName(c.id), #c.times,
+        nearest and ("   nearest " .. Clock(nearest)) or "", upText)
+end
+
+-- Wheel and click in the timeline.
+function Graph.TimelineWheel(delta)
+    local cl = Graph.castLanes
+    if not cl then return end
+    local scale = plot:GetEffectiveScale()
+    local cx, cy = GetCursorPosition()
+    local x, y = cx / scale - plot:GetLeft(), plot:GetTop() - cy / scale
+    if y >= cl.laneTop and x < cl.left then
+        view.laneScroll = (view.laneScroll or 0) - delta
+    elseif cl.winLen < cl.n then
+        view.castStart = (view.castStart or 0) - delta * cl.winLen / 4
+    else
+        return
+    end
+    Graph.Render()
+end
+
+function Graph.TimelineClick()
+    local cl = Graph.castLanes
+    if not (cl and cl.winLen < cl.n) then return end
+    local scale = plot:GetEffectiveScale()
+    local cx, cy = GetCursorPosition()
+    local x, y = cx / scale - plot:GetLeft(), plot:GetTop() - cy / scale
+    if y > cl.graphH then return end
+    view.castStart = x / cl.width * cl.n - cl.winLen / 2
+    Graph.Render()
 end
 
 -- Hover text for a column in the ability view: its three biggest parts.
@@ -887,6 +1045,16 @@ local function ParseKey(text)
                 p.casts = p.casts or {}
                 p.casts[#p.casts + 1] = { id = tonumber(id), times = times }
             end
+        elseif kind == "U" then
+            -- Aura uptime: U^player^spellID^from-to,... (tenths).
+            local idx, id, list = rest:match("^(%d+)%^(%d+)%^(.*)$")
+            local p = idx and byIndex[idx]
+            if p then
+                local ivs = {}
+                for a, b in list:gmatch("(%d+)%-(%d+)") do ivs[#ivs + 1] = { tonumber(a) / 10, tonumber(b) / 10 } end
+                p.uptimes = p.uptimes or {}
+                p.uptimes[tonumber(id)] = ivs
+            end
         end
     end
     if f.n == 0 or not next(f.players) then return nil, "The export looks empty or cut short." end
@@ -979,6 +1147,7 @@ local function LoadSaved(e)
     return f
 end
 Graph.LoadSaved = LoadSaved
+Graph.ShowFight = ShowFight   -- exposed for testing outside the game
 
 local function OpenSaved(e)
     local f = LoadSaved(e)
@@ -1147,6 +1316,7 @@ local function Build()
     view.smooth = db.smooth or view.smooth
     view.byAbility = db.byAbility == true
     view.casts = db.casts == true
+    view.castWindow = db.castWindow or 30
 
     win = CreateFrame("Frame", "DPSReportGraphFrame", UIParent, "BackdropTemplate")
     win:SetSize(db.w or 520, db.h or 260)
@@ -1281,6 +1451,19 @@ local function Build()
     casts:SetPoint("RIGHT", zoomLabel, "LEFT", -6, 0)
     zoomLabel = casts
 
+    -- The timeline's window: all, 15s, 30s, 1m, 2m (Casts only).
+    local windowBtn
+    windowBtn = TextButton(bar2, Graph.WindowLabel(), function()
+        Graph.NextWindow()
+        GraphDB().castWindow = view.castWindow
+        windowBtn.text:SetText(Graph.WindowLabel())
+        Graph.Render()
+    end)
+    windowBtn:SetWidth(78)
+    windowBtn:SetPoint("RIGHT", zoomLabel, "LEFT", -6, 0)
+    zoomLabel = windowBtn
+    Graph.windowBtn = windowBtn
+
     playerBtn = TextButton(bar2, "", function(_, button)
         local f = ShownFight()
         local keys = PlayerKeys(f)
@@ -1316,12 +1499,16 @@ local function Build()
     plot:EnableMouse(true)
     plot:SetScript("OnUpdate", UpdateHover)
     plot:SetScript("OnSizeChanged", function() Graph.Render() end)
+    plot:EnableMouseWheel(true)
+    plot:SetScript("OnMouseWheel", function(_, delta) Graph.TimelineWheel(delta) end)
+    plot:SetScript("OnMouseDown", function() Graph.TimelineClick() end)
 
     maxText = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     maxText:SetPoint("TOPRIGHT", plot, "TOPLEFT", -4, 0)
     local zero = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     zero:SetPoint("BOTTOMRIGHT", plot, "BOTTOMLEFT", -4, 0)
     zero:SetText("0")
+    Graph.zeroText = zero
     startText = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     startText:SetPoint("TOPLEFT", plot, "BOTTOMLEFT", 0, -2)
     endText = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
