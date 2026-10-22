@@ -44,7 +44,12 @@ New:
   is split into their top abilities (and Other), with a coloured legend;
   hover for the biggest three at that moment. Works for damage and healing.
   (Needs a fresh export from the updated script.)
-- Casts: on an imported key or pull, a timeline under the ability graph -
+- The graph window got a new layout (imported keys and pulls): a filled,
+  stacked area chart instead of bars, a sidebar listing everyone in the run
+  with spec icons and a Find a character box, All characters (everyone
+  stacked in class colours), and an Event log of the player's casts and
+  aura changes with its own filter. Timeline is the old Casts toggle.
+- Timeline: on an imported key or pull, lanes under the ability graph -
   one lane per spell with its icon and name, an icon at every cast, and a bar
   wherever its DoT, HoT, buff or channel was up. Window (all/15s/30s/1m/2m)
   zooms it; the mouse wheel scrolls it (over the names: scrolls the spells)

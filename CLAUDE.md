@@ -159,6 +159,37 @@ by older parsers:
     up/down + uptime %.
   - **Tested out of game:** run through a mocked window in fengari on the Ula'tek pull — render,
     hover, wheel and click.
+
+**Analysis-window layout (2026-10-22, after the same screenshot; untested in game).**
+
+- **Filled area chart** (`Graph.RenderAbilities`, now used for every imported rate graph that is
+  not comparing):
+  - points every 4px, and each segment × layer is ONE texture skewed with `SetVertexOffset` into a
+    trapezoid (1 UL, 2 LL, 3 UR, 4 LR; offsets measured from the anchored bounding box);
+  - a 1px `CreateLine` along each layer's top;
+  - `opts`: `list`/`totals`/`otherColour`/`otherLabel`/`noLegend`.
+  - **Where it applies:** the plain imported graph is one layer in class colour. Live fights and
+    comparisons keep the StatusBar bars, because live values are secret and only a StatusBar can
+    draw them.
+  - **Hover:** picks the NEAREST point (`+ 0.5`).
+  - `SetVertexOffset` is `AllowedWhenUntainted` for secrets, which is irrelevant here: imported
+    values are plain.
+- **Sidebar** (`Graph.BuildSidebar`/`RenderSidebar`, 150px left of the plot):
+  - "Find a character" search, then "All characters" (imported only) and the fight's players, with
+    spec icons (`GetSpecializationInfoByID`, `p.spec` from the P record) or a `classicon-<class>`
+    atlas;
+  - click selects; the wheel scrolls (`view.sideScroll`).
+  - **All characters** (`view.all`, not saved) = `Graph.RenderAll`: the top 8 players by the
+    metric in class colours, the rest as "Others".
+- **Event log** (`view.log`, saved; exclusive with Timeline via `SetMode`):
+  - lists the player's casts plus aura Applied (with duration) / Removed, built from the C/U
+    records (`LogEvents`, cached per player);
+  - its own filter box (`Graph.logBox`); the wheel scrolls 3 rows (`view.logScroll`).
+  - **No individual hits:** the export doesn't carry them; that would be several MB for a raid.
+- **Window size:** default 900×460, minimum 820×340.
+- **Test hooks:** `Graph.view` and `Graph.ShowFight` are exposed for the fengari harness.
+- **Tested out of game:** every mode rendered and hovered through the mock (plain, By ability,
+  Timeline, log scrolled and filtered, All, HPS); about 3.7k regions at most.
 - **Why coarse:** per-second exact ability data made a 20-player 9.5-minute pull 452 KB; coarse
   brought it to 277 KB, of which the exact D/H totals are 126 KB. Top 5 damage abilities covered
   only 34% of a raider's damage, top 8 covers 51%; the rest is "Other".

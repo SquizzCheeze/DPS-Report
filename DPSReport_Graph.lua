@@ -273,6 +273,8 @@ function Graph.Render()
 
     if not f then
         fightLabel:SetText("No fights yet")
+        Graph.HideAbilities() Graph.HideCasts() Graph.HideLog()
+        Graph.RenderSidebar({ players = {} })
         playerBtn.text:SetText("")
         emptyText:Show()
         for _, b in ipairs(bars) do b:Hide() end
@@ -293,26 +295,56 @@ function Graph.Render()
         view.player = keys[1] or "you"
     end
     local p = f.players[view.player]
-    playerBtn.text:SetText(PlayerLabel(p) .. "  |cff888888(click: next)|r")
+    local all = f.imported and view.all
+    playerBtn.text:SetText(all and "All characters" or PlayerLabel(p))
+    Graph.RenderSidebar(f)
+    if Graph.logBox then Graph.logBox:SetShown(view.log == true and f.imported == true) end
 
     local values = p and p[m.key] or {}
     local width = plot:GetWidth()
     local height = plot:GetHeight()
-
-    -- By ability: an imported fight that carries per-ability detail.
-    -- Casts: an imported fight's cast timeline (wins over By ability).
-    if view.casts and f.imported and p and p.casts then
+    local function HideBars()
         for _, b in ipairs(bars) do b:Hide() end
         for _, b in ipairs(ghosts) do b:Hide() end
+    end
+    Graph.HideLog()
+
+    -- All characters: every player stacked (imported fights).
+    if all then
+        HideBars()
+        Graph.HideCasts()
+        Graph.RenderAll(f, m, width, height)
+        return
+    end
+    -- Event log, then Timeline (the cast lanes), then By ability.
+    if view.log and f.imported and p and p.casts then
+        HideBars()
+        Graph.HideCasts()
+        Graph.HideAbilities()
+        Graph.RenderLog(f, p, width, height)
+        return
+    end
+    if view.casts and f.imported and p and p.casts then
+        HideBars()
         Graph.HideAbilities()
         Graph.RenderCasts(f, p, m, width, height)
         return
     end
     Graph.HideCasts()
     if view.byAbility and f.imported and p and p.abilities then
-        for _, b in ipairs(bars) do b:Hide() end
-        for _, b in ipairs(ghosts) do b:Hide() end
+        HideBars()
         Graph.RenderAbilities(f, p, m, width, height)
+        return
+    end
+    -- A plain imported rate graph, not comparing: the same filled chart,
+    -- one layer in the player's class colour.
+    if f.imported and m.rate and p and not (view.compare and view.compare ~= f) then
+        HideBars()
+        local cc = p.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[p.class]
+        Graph.RenderAbilities(f, p, m, width, height, 0,
+            { list = {}, otherColour = cc and { cc.r, cc.g, cc.b } or C.accent, noLegend = true,
+              otherLabel = "Total" })
+        Graph.CompareSummary(f, p, nil, nil, m)
         return
     end
     Graph.HideAbilities()
@@ -421,6 +453,10 @@ local function UpdateHover(_, elapsed)
     end
     hoverIdle = false
     local x = GetCursorPosition() / plot:GetEffectiveScale() - plot:GetLeft()
+    if Graph.logState then
+        hoverText:SetText("")
+        return
+    end
     if Graph.castLanes then
         local _, cy = GetCursorPosition()
         local y = plot:GetTop() - cy / plot:GetEffectiveScale()
@@ -429,6 +465,7 @@ local function UpdateHover(_, elapsed)
     end
     local i = math.min(Graph.cols, math.max(1, math.floor(x / Graph.colW) + 1))
     if Graph.abilityCols then
+        i = math.min(Graph.cols, math.max(1, math.floor(x / Graph.colW + 0.5) + 1))
         hoverText:SetText(Graph.AbilityHover(i) or "")
         return
     end
@@ -511,12 +548,21 @@ local ABILITY_COLOURS = {
     { 1.00, 0.85, 0.25 }, { 0.30, 0.85, 0.80 }, { 0.95, 0.35, 0.35 }, { 0.65, 0.55, 0.95 },
 }
 local OTHER_COLOUR = { 0.45, 0.45, 0.45 }
-local segments = {}            -- [column][slot] = texture
-local MIN_ABILITY_COLUMN = 5   -- wider than plain bars: up to 9 textures each
+-- A FILLED, stacked area chart (imported fights only; their values are plain).
+-- Points every AREA_STEP pixels; between two points each layer is ONE quad
+-- whose corners are moved with SetVertexOffset into the trapezoid joining the
+-- layer's bottom and top at either end, plus a thin line along its top edge.
+-- Layers: an ability (By ability), a player (All characters), or a single
+-- layer for a plain graph. "Other" (the total minus the named layers) is last.
+local AREA_STEP = 4
+local quads, edges = {}, {}    -- [segment][layer]
 
 function Graph.HideAbilities()
-    for _, col in pairs(segments) do
+    for _, col in pairs(quads) do
         for _, t in pairs(col) do t:Hide() end
+    end
+    for _, col in pairs(edges) do
+        for _, l in pairs(col) do l:Hide() end
     end
     Graph.abilityCols = nil
 end
@@ -526,24 +572,32 @@ local function AbilityName(id)
     return (C_Spell.GetSpellName and C_Spell.GetSpellName(id)) or ("Spell " .. id)
 end
 
-function Graph.RenderAbilities(f, p, m, width, height, base)
-    base = base or 0
+local function LayerName(a) return a.label or AbilityName(a.id) end
+
+local function LayerColour(list, k, opts)
+    if k > #list then return opts.otherColour or OTHER_COLOUR end
+    return list[k].colour or ABILITY_COLOURS[(k - 1) % #ABILITY_COLOURS + 1]
+end
+
+-- opts: list (layers, default the player's abilities), totals (per-second
+-- total, default the player's), otherColour, noLegend, otherLabel.
+function Graph.RenderAbilities(f, p, m, width, height, base, opts)
+    base, opts = base or 0, opts or {}
     Graph.HideAbilities()
-    local list = p.abilities and p.abilities[m.meter == "damage" and "D" or "H"] or {}
-    local totals = m.meter == "damage" and p.dps or p.hps
+    local list = opts.list or (p.abilities and p.abilities[m.meter == "damage" and "D" or "H"]) or {}
+    local totals = opts.totals or (m.meter == "damage" and p.dps or p.hps)
     local n = f.n
-    local cols = math.max(1, math.min(n, math.floor(width / MIN_ABILITY_COLUMN)))
-    local colW = width / cols
+    local pts = math.max(2, math.min(n, math.floor(width / AREA_STEP)))
+    local step = width / (pts - 1)
     local window = view.smooth
 
-    -- Each ability's per-second series, smoothed like the plain view.
     local series = {}
     for k, a in ipairs(list) do series[k] = Graph.Smoothed(a.per, n, window) end
     local total = Graph.Smoothed(totals or {}, n, window)
 
     local colData, peak = {}, 0
-    for i = 1, cols do
-        local from, to = Graph.Bucket(i, cols, n)
+    for i = 1, pts do
+        local from, to = Graph.Bucket(i, pts, n)
         local entry = { from = from, parts = {} }
         local sum = 0
         for k = 1, #list do
@@ -559,30 +613,58 @@ function Graph.RenderAbilities(f, p, m, width, height, base)
     end
     local top = math.max(1, peak * 1.05 / view.zoom)
 
+    -- Each point's layer edges in pixels: edge[i][k] is the TOP of layer k.
+    local slots = #list + 1
+    local edge = {}
     for i, entry in ipairs(colData) do
-        segments[i] = segments[i] or {}
-        local y = 0
-        local slots = #list + 1
+        local e, y = {}, 0
         for k = 1, slots do
             local v = k <= #list and entry.parts[k] or entry.other
-            local h = math.min(height - y, v / top * height)
-            if h >= 0.5 then
-                local t = segments[i][k]
-                if not t then
-                    t = plot:CreateTexture(nil, "ARTWORK")
-                    segments[i][k] = t
+            y = math.min(height, y + v / top * height)
+            e[k] = y
+        end
+        edge[i] = e
+    end
+
+    for i = 1, pts - 1 do
+        quads[i], edges[i] = quads[i] or {}, edges[i] or {}
+        local x0 = (i - 1) * step
+        for k = 1, slots do
+            local b0 = k > 1 and edge[i][k - 1] or 0
+            local b1 = k > 1 and edge[i + 1][k - 1] or 0
+            local t0, t1 = edge[i][k], edge[i + 1][k]
+            local q, line = quads[i][k], edges[i][k]
+            if (t0 - b0) + (t1 - b1) >= 0.5 then
+                if not q then
+                    q = plot:CreateTexture(nil, "ARTWORK")
+                    quads[i][k] = q
+                    line = plot:CreateLine(nil, "ARTWORK", nil, 2)
+                    line:SetThickness(1)
+                    edges[i][k] = line
                 end
-                local c = k <= #list and ABILITY_COLOURS[(k - 1) % #ABILITY_COLOURS + 1] or OTHER_COLOUR
-                t:SetColorTexture(c[1], c[2], c[3], 0.9)
-                t:ClearAllPoints()
-                t:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", (i - 1) * colW, base + y)
-                t:SetSize(math.max(1, colW - 1), h)
-                t:Show()
-                y = y + h
+                local c = LayerColour(list, k, opts)
+                local yb, yt = math.min(b0, b1), math.max(t0, t1)
+                q:SetColorTexture(c[1], c[2], c[3], 0.55)
+                q:ClearAllPoints()
+                q:SetPoint("BOTTOMLEFT", plot, "BOTTOMLEFT", x0, base + yb)
+                q:SetSize(step, math.max(0.5, yt - yb))
+                q:SetVertexOffset(1, 0, t0 - yt)   -- upper left
+                q:SetVertexOffset(2, 0, b0 - yb)   -- lower left
+                q:SetVertexOffset(3, 0, t1 - yt)   -- upper right
+                q:SetVertexOffset(4, 0, b1 - yb)   -- lower right
+                q:Show()
+                line:SetColorTexture(math.min(1, c[1] + 0.25), math.min(1, c[2] + 0.25), math.min(1, c[3] + 0.25), 0.95)
+                line:SetStartPoint("BOTTOMLEFT", plot, x0, base + t0)
+                line:SetEndPoint("BOTTOMLEFT", plot, x0 + step, base + t1)
+                line:Show()
+            elseif q then
+                q:Hide()
+                line:Hide()
             end
         end
     end
-    Graph.abilityCols, Graph.abilityList, Graph.cols, Graph.colW = colData, list, cols, colW
+    Graph.abilityCols, Graph.abilityList, Graph.cols, Graph.colW = colData, list, pts, step
+    Graph.otherLabel = opts.otherLabel
 
     maxText:SetText(AbbreviateNumbers(top))
     startText:SetText("0:00")
@@ -591,14 +673,44 @@ function Graph.RenderAbilities(f, p, m, width, height, base)
 
     -- The legend, on the line above the plot.
     if compareText then
-        local parts = {}
-        for k, a in ipairs(list) do
-            local c = ABILITY_COLOURS[(k - 1) % #ABILITY_COLOURS + 1]
-            parts[#parts + 1] = string.format("|cff%02x%02x%02x%s|r", math.floor(c[1] * 255), math.floor(c[2] * 255), math.floor(c[3] * 255), AbilityName(a.id))
+        if opts.noLegend then
+            compareText:SetText("")
+        else
+            local parts = {}
+            for k, a in ipairs(list) do
+                local c = LayerColour(list, k, opts)
+                parts[#parts + 1] = string.format("|cff%02x%02x%02x%s|r", math.floor(c[1] * 255),
+                    math.floor(c[2] * 255), math.floor(c[3] * 255), LayerName(a))
+            end
+            parts[#parts + 1] = "|cff737373" .. (opts.otherLabel or "Other") .. "|r"
+            compareText:SetText(table.concat(parts, "  "))
         end
-        parts[#parts + 1] = "|cff737373Other|r"
-        compareText:SetText(table.concat(parts, "  "))
     end
+end
+
+-- All characters (imported fights): one layer per player, the top eight by
+-- this metric, in class colours, with everyone else as "Others".
+function Graph.RenderAll(f, m, width, height)
+    local field = m.meter == "damage" and "dps" or "hps"
+    local players, totals = {}, {}
+    for _, p in pairs(f.players) do
+        local sum = 0
+        for s = 1, f.n do
+            local v = p[field] and p[field][s] or 0
+            sum = sum + v
+            totals[s] = (totals[s] or 0) + v
+        end
+        if sum > 0 then players[#players + 1] = { p = p, sum = sum } end
+    end
+    table.sort(players, function(a, b) return a.sum > b.sum end)
+    local list = {}
+    for k = 1, math.min(8, #players) do
+        local p = players[k].p
+        local cc = p.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[p.class]
+        list[k] = { label = PlayerLabel(p), per = p[field],
+                    colour = cc and { cc.r, cc.g, cc.b } or ABILITY_COLOURS[k] }
+    end
+    Graph.RenderAbilities(f, nil, m, width, height, 0, { list = list, totals = totals, otherLabel = "Others" })
 end
 
 -- The Casts view is a TIMELINE: the stacked ability graph across the top of
@@ -792,7 +904,7 @@ function Graph.CastHover(x, y)
     local cl = Graph.castLanes
     if not cl then return nil end
     if y < cl.graphH then
-        local i = math.min(Graph.cols or 1, math.max(1, math.floor(x / (Graph.colW or 1)) + 1))
+        local i = math.min(Graph.cols or 1, math.max(1, math.floor(x / (Graph.colW or 1) + 0.5) + 1))
         return Graph.AbilityHover(i)
     end
     local row = math.floor((y - cl.laneTop) / LANE_H) + 1
@@ -818,6 +930,11 @@ end
 
 -- Wheel and click in the timeline.
 function Graph.TimelineWheel(delta)
+    if Graph.logState then
+        view.logScroll = (view.logScroll or 0) - delta * 3
+        Graph.Render()
+        return
+    end
     local cl = Graph.castLanes
     if not cl then return end
     local scale = plot:GetEffectiveScale()
@@ -844,15 +961,264 @@ function Graph.TimelineClick()
     Graph.Render()
 end
 
+-----------------------------------------------------------------------
+-- Sidebar: the fight's characters, searchable, plus All characters
+-----------------------------------------------------------------------
+
+local SIDE_W, SIDE_ROW = 150, 20
+local side, sideSearch, sideAll, sideRows = nil, nil, nil, {}
+
+local function PlayerIcon(p)
+    local spec = p and p.spec
+    if spec and GetSpecializationInfoByID then
+        local _, _, _, icon = GetSpecializationInfoByID(spec)
+        if icon then return icon end
+    end
+    return nil, p and p.class and ("classicon-" .. p.class:lower())
+end
+
+function Graph.RenderSidebar(f)
+    if not side then return end
+    local filter = (sideSearch:GetText() or ""):lower()
+    local keys = {}
+    for _, key in ipairs(PlayerKeys(f)) do
+        local label = PlayerLabel(f.players[key])
+        if filter == "" or label:lower():find(filter, 1, true) then keys[#keys + 1] = key end
+    end
+    table.sort(keys, function(a, b)
+        if a == "you" then return true end
+        if b == "you" then return false end
+        return PlayerLabel(f.players[a]) < PlayerLabel(f.players[b])
+    end)
+    sideAll:SetShown(f.imported == true)
+    sideAll.sel:SetShown(f.imported and view.all == true)
+    local top = f.imported and 48 or 26
+    local fits = math.max(1, math.floor((side:GetHeight() - top) / SIDE_ROW))
+    local first = math.max(0, math.min(view.sideScroll or 0, #keys - fits))
+    view.sideScroll = first
+    for row = 1, math.max(fits, #sideRows) do
+        local key = keys[first + row]
+        local r = sideRows[row]
+        if key and row <= fits then
+            if not r then
+                r = CreateFrame("Button", nil, side)
+                r:SetHeight(SIDE_ROW)
+                r.sel = r:CreateTexture(nil, "BACKGROUND")
+                r.sel:SetAllPoints()
+                r.sel:SetColorTexture(C.accent[1], C.accent[2], C.accent[3], 0.22)
+                r.hl = r:CreateTexture(nil, "HIGHLIGHT")
+                r.hl:SetAllPoints()
+                r.hl:SetColorTexture(1, 1, 1, 0.06)
+                r.icon = r:CreateTexture(nil, "ARTWORK")
+                r.icon:SetSize(SIDE_ROW - 4, SIDE_ROW - 4)
+                r.icon:SetPoint("LEFT", 4, 0)
+                r.text = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                r.text:SetPoint("LEFT", r.icon, "RIGHT", 5, 0)
+                r.text:SetPoint("RIGHT", -2, 0)
+                r.text:SetJustifyH("LEFT")
+                r.text:SetWordWrap(false)
+                r:SetScript("OnClick", function(self)
+                    view.player, view.all, view.zoom = self.key, false, 1
+                    Graph.Render()
+                end)
+                sideRows[row] = r
+            end
+            local p = f.players[key]
+            r.key = key
+            r:ClearAllPoints()
+            r:SetPoint("TOPLEFT", side, "TOPLEFT", 0, -(top + (row - 1) * SIDE_ROW))
+            r:SetPoint("RIGHT", side, "RIGHT", 0, 0)
+            local icon, atlas = PlayerIcon(p)
+            if icon then
+                r.icon:SetTexture(icon)
+                r.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+            elseif atlas then
+                r.icon:SetAtlas(atlas)
+            else
+                r.icon:SetColorTexture(0.3, 0.3, 0.3, 1)
+            end
+            r.text:SetText(PlayerLabel(p))
+            local cc = p and p.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[p.class]
+            if cc then r.text:SetTextColor(cc.r, cc.g, cc.b) else r.text:SetTextColor(1, 1, 1) end
+            r.sel:SetShown(not (f.imported and view.all) and key == view.player)
+            r:Show()
+        elseif r then
+            r:Hide()
+        end
+    end
+end
+
+function Graph.BuildSidebar(parent, anchor)
+    side = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    side:SetWidth(SIDE_W)
+    side:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -4)
+    side:SetPoint("BOTTOM", parent, "BOTTOM", 0, 30)
+    side:SetBackdrop({ bgFile = "Interface\\BUTTONS\\WHITE8X8" })
+    side:SetBackdropColor(0, 0, 0, 0.25)
+    side:EnableMouseWheel(true)
+    side:SetScript("OnMouseWheel", function(_, delta)
+        view.sideScroll = (view.sideScroll or 0) - delta
+        Graph.RenderSidebar(ShownFight() or { players = {} })
+    end)
+
+    sideSearch = CreateFrame("EditBox", nil, side, "BackdropTemplate")
+    sideSearch:SetHeight(20)
+    sideSearch:SetPoint("TOPLEFT", 3, -3)
+    sideSearch:SetPoint("TOPRIGHT", -3, -3)
+    ns.ApplyBackdrop(sideSearch, C.control, C.border)
+    sideSearch:SetFontObject(GameFontHighlightSmall)
+    sideSearch:SetTextInsets(6, 6, 0, 0)
+    sideSearch:SetAutoFocus(false)
+    local hint = sideSearch:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hint:SetPoint("LEFT", 6, 0)
+    hint:SetText("Find a character...")
+    sideSearch:SetScript("OnTextChanged", function(self)
+        hint:SetShown(self:GetText() == "")
+        view.sideScroll = 0
+        Graph.RenderSidebar(ShownFight() or { players = {} })
+    end)
+    sideSearch:SetScript("OnEscapePressed", function(self) self:SetText("") self:ClearFocus() end)
+    sideSearch:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+
+    sideAll = CreateFrame("Button", nil, side)
+    sideAll:SetHeight(SIDE_ROW)
+    sideAll:SetPoint("TOPLEFT", 0, -26)
+    sideAll:SetPoint("TOPRIGHT", 0, -26)
+    sideAll.sel = sideAll:CreateTexture(nil, "BACKGROUND")
+    sideAll.sel:SetAllPoints()
+    sideAll.sel:SetColorTexture(C.accent[1], C.accent[2], C.accent[3], 0.22)
+    local hl = sideAll:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetColorTexture(1, 1, 1, 0.06)
+    local t = sideAll:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    t:SetPoint("CENTER")
+    t:SetText("All characters")
+    sideAll:SetScript("OnClick", function()
+        view.all, view.zoom = true, 1
+        Graph.Render()
+    end)
+    return side
+end
+
+-----------------------------------------------------------------------
+-- Event log (imported fights): the player's casts and aura changes
+-----------------------------------------------------------------------
+--
+-- The export carries casts and when each aura was up, not individual hits
+-- (those would make a raid export several MB), so that is what is listed.
+
+local LOG_ROW = 16
+local logRows, logHeader, logEvents, logFor = {}, nil, nil, nil
+
+function Graph.HideLog()
+    for _, r in ipairs(logRows) do r:Hide() end
+    if logHeader then logHeader:Hide() end
+    Graph.logState = nil
+end
+
+local function LogEvents(p)
+    if logFor == p and logEvents then return logEvents end
+    local list = {}
+    for _, c in ipairs(p.casts or {}) do
+        for _, t in ipairs(c.times) do list[#list + 1] = { t = t, what = "Cast", id = c.id } end
+        local ups = p.uptimes and p.uptimes[c.id]
+        for _, iv in ipairs(ups or {}) do
+            list[#list + 1] = { t = iv[1], what = "Applied", id = c.id,
+                                detail = string.format("up %.1fs", iv[2] - iv[1]) }
+            list[#list + 1] = { t = iv[2], what = "Removed", id = c.id }
+        end
+    end
+    table.sort(list, function(a, b) return a.t < b.t end)
+    logEvents, logFor = list, p
+    return list
+end
+
+function Graph.RenderLog(f, p, width, height)
+    Graph.HideLog()
+    local all = LogEvents(p)
+    local filter = (Graph.logFilter or ""):lower()
+    local list = all
+    if filter ~= "" then
+        list = {}
+        for _, e in ipairs(all) do
+            local hay = (AbilityName(e.id) .. " " .. e.what .. " " .. Clock(e.t)):lower()
+            if hay:find(filter, 1, true) then list[#list + 1] = e end
+        end
+    end
+    if not logHeader then
+        logHeader = CreateFrame("Frame", nil, plot)
+        logHeader:SetHeight(LOG_ROW)
+        local cols = { { "Time", 6 }, { "Event", 60 }, { "Ability", 140 }, { "Detail", 380 } }
+        for _, c in ipairs(cols) do
+            local fs = logHeader:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            fs:SetPoint("LEFT", c[2], 0)
+            fs:SetText(c[1])
+        end
+    end
+    logHeader:ClearAllPoints()
+    logHeader:SetPoint("TOPLEFT", plot, "TOPLEFT", 0, -2)
+    logHeader:SetPoint("TOPRIGHT", plot, "TOPRIGHT", 0, -2)
+    logHeader:Show()
+
+    local fits = math.max(1, math.floor((height - LOG_ROW - 4) / LOG_ROW))
+    local first = math.max(0, math.min(view.logScroll or 0, #list - fits))
+    view.logScroll = first
+    for row = 1, math.min(fits, #list - first) do
+        local e = list[first + row]
+        local r = logRows[row]
+        if not r then
+            r = CreateFrame("Frame", nil, plot)
+            r:SetHeight(LOG_ROW)
+            r.bg = r:CreateTexture(nil, "BACKGROUND")
+            r.bg:SetAllPoints()
+            r.time = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            r.time:SetPoint("LEFT", 6, 0)
+            r.what = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            r.what:SetPoint("LEFT", 60, 0)
+            r.icon = r:CreateTexture(nil, "ARTWORK")
+            r.icon:SetSize(LOG_ROW - 2, LOG_ROW - 2)
+            r.icon:SetPoint("LEFT", 140, 0)
+            r.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+            r.name = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            r.name:SetPoint("LEFT", r.icon, "RIGHT", 4, 0)
+            r.detail = r:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+            r.detail:SetPoint("LEFT", 380, 0)
+            logRows[row] = r
+        end
+        r:ClearAllPoints()
+        r:SetPoint("TOPLEFT", plot, "TOPLEFT", 0, -(LOG_ROW + 4 + (row - 1) * LOG_ROW))
+        r:SetPoint("RIGHT", plot, "RIGHT", 0, 0)
+        r.bg:SetColorTexture(1, 1, 1, row % 2 == 0 and 0.04 or 0)
+        r.time:SetText(string.format("%s.%d", Clock(math.floor(e.t)), math.floor((e.t % 1) * 10)))
+        local colour = e.what == "Cast" and "|cffffd100" or (e.what == "Applied" and "|cff40ff40" or "|cffff6060")
+        r.what:SetText(colour .. e.what .. "|r")
+        r.icon:SetTexture(C_Spell.GetSpellTexture(e.id) or 134400)
+        r.name:SetText(AbilityName(e.id))
+        r.detail:SetText(e.detail or "")
+        r:Show()
+    end
+    Graph.logState = { count = #list, fits = fits }
+    maxText:SetText("")
+    if Graph.zeroText then Graph.zeroText:Hide() end
+    startText:SetText("")
+    endText:SetText(string.format("%d-%d of %d events", #list > 0 and first + 1 or 0,
+        first + math.min(fits, #list - first), #list))
+    if compareText then
+        compareText:SetText("|cffbbbbbbEvent log|r  " .. PlayerLabel(p)
+            .. "'s casts and aura changes. Wheel to scroll; the box filters.")
+    end
+    Graph.cols, Graph.colW = 1, width
+end
+
 -- Hover text for a column in the ability view: its three biggest parts.
 function Graph.AbilityHover(i)
     local entry = Graph.abilityCols and Graph.abilityCols[i]
     if not entry then return nil end
     local parts = {}
     for k, a in ipairs(Graph.abilityList or {}) do
-        parts[#parts + 1] = { name = AbilityName(a.id), v = entry.parts[k] or 0 }
+        parts[#parts + 1] = { name = LayerName(a), v = entry.parts[k] or 0 }
     end
-    parts[#parts + 1] = { name = "Other", v = entry.other or 0 }
+    parts[#parts + 1] = { name = Graph.otherLabel or "Other", v = entry.other or 0 }
     table.sort(parts, function(a, b) return a.v > b.v end)
     local out = {}
     for k = 1, math.min(3, #parts) do
@@ -913,10 +1279,10 @@ function Graph.CompareSummary(f, p, cf, cp, m)
         -- By ability is on but this fight can't show it: say why rather than
         -- quietly drawing the plain graph.
         local note = ""
-        if view.casts and not (f.imported and p and p.casts) then
+        if (view.casts or view.log) and not (f.imported and p and p.casts) then
             note = f.imported
                 and "|cffffd100No casts in this import|r -- run Export Last Key again and re-import."
-                or "|cffffd100Casts|r works on imported runs only."
+                or "|cffffd100Timeline and Event log|r work on imported runs only."
         elseif view.byAbility then
             if not f.imported then
                 note = "|cffffd100By ability|r works on imported runs only (the game hides abilities live)."
@@ -997,7 +1363,7 @@ local function ParseKey(text)
             local idx, name, spec = strsplit("^", rest)
             local short = (name or "?"):match("^([^%-]+)") or name
             local key = (short == me) and "you" or ("imported" .. (idx or "?"))
-            local p = { key = key, name = name, class = SpecClass(tonumber(spec)) }
+            local p = { key = key, name = name, spec = tonumber(spec), class = SpecClass(tonumber(spec)) }
             f.players[key] = p
             byIndex[idx] = p
         elseif kind == "B" then
@@ -1148,6 +1514,7 @@ local function LoadSaved(e)
 end
 Graph.LoadSaved = LoadSaved
 Graph.ShowFight = ShowFight   -- exposed for testing outside the game
+Graph.view = view
 
 local function OpenSaved(e)
     local f = LoadSaved(e)
@@ -1317,9 +1684,10 @@ local function Build()
     view.byAbility = db.byAbility == true
     view.casts = db.casts == true
     view.castWindow = db.castWindow or 30
+    view.log = db.log == true and not view.casts
 
     win = CreateFrame("Frame", "DPSReportGraphFrame", UIParent, "BackdropTemplate")
-    win:SetSize(db.w or 520, db.h or 260)
+    win:SetSize((db.w and db.w >= 820) and db.w or 900, (db.h and db.h >= 340) and db.h or 460)
     if db.point then
         win:SetPoint(db.point, UIParent, db.rel or db.point, db.x or 0, db.y or 0)
     else
@@ -1332,7 +1700,7 @@ local function Build()
     win:SetClampedToScreen(true)
     win:SetMovable(true)
     win:SetResizable(true)
-    if win.SetResizeBounds then win:SetResizeBounds(630, 200, 1400, 800) end
+    if win.SetResizeBounds then win:SetResizeBounds(820, 340, 1800, 1100) end
     win:EnableMouse(true)
     ns.ApplyBackdrop(win)
     tinsert(UISpecialFrames, "DPSReportGraphFrame")
@@ -1439,17 +1807,46 @@ local function Build()
     byAbility:SetPoint("RIGHT", zoomLabel, "LEFT", -6, 0)
     zoomLabel = byAbility
 
-    -- Casts: the cast timeline (imported fights).
-    local casts
-    casts = TextButton(bar2, "Casts", function()
-        view.casts = not view.casts
-        GraphDB().casts = view.casts
-        casts.text:SetText(view.casts and "|cffffd100Casts|r" or "Casts")
+    -- Timeline (the ability lanes) and Event log, imported fights only. At
+    -- most one is on; with neither, it's the graph.
+    local casts, log
+    local function ModeLabels()
+        casts.text:SetText(view.casts and "|cffffd100Timeline|r" or "Timeline")
+        log.text:SetText(view.log and "|cffffd100Event log|r" or "Event log")
+    end
+    local function SetMode(timeline, eventLog)
+        view.casts, view.log = timeline, eventLog
+        GraphDB().casts, GraphDB().log = timeline, eventLog
+        ModeLabels()
+        Graph.Render()
+    end
+    log = TextButton(bar2, "Event log", function() SetMode(false, not view.log) end)
+    log:SetPoint("RIGHT", zoomLabel, "LEFT", -6, 0)
+    casts = TextButton(bar2, "Timeline", function() SetMode(not view.casts, false) end)
+    casts:SetPoint("RIGHT", log, "LEFT", -6, 0)
+    ModeLabels()
+    zoomLabel = casts
+
+    -- The event log's filter box, over the plot's top-right corner.
+    local logBox = CreateFrame("EditBox", nil, win, "BackdropTemplate")
+    logBox:SetSize(170, 16)
+    ns.ApplyBackdrop(logBox, C.control, C.border)
+    logBox:SetFontObject(GameFontHighlightSmall)
+    logBox:SetTextInsets(6, 6, 0, 0)
+    logBox:SetAutoFocus(false)
+    local logHint = logBox:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    logHint:SetPoint("LEFT", 6, 0)
+    logHint:SetText("Filter the log...")
+    logBox:SetScript("OnTextChanged", function(self)
+        Graph.logFilter = self:GetText()
+        logHint:SetShown(Graph.logFilter == "")
+        view.logScroll = 0
         Graph.Render()
     end)
-    casts.text:SetText(view.casts and "|cffffd100Casts|r" or "Casts")
-    casts:SetPoint("RIGHT", zoomLabel, "LEFT", -6, 0)
-    zoomLabel = casts
+    logBox:SetScript("OnEscapePressed", function(self) self:SetText("") self:ClearFocus() end)
+    logBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    logBox:Hide()
+    Graph.logBox = logBox
 
     -- The timeline's window: all, 15s, 30s, 1m, 2m (Casts only).
     local windowBtn
@@ -1487,13 +1884,15 @@ local function Build()
     plot = CreateFrame("Frame", nil, win, "BackdropTemplate")
     -- The comparison summary sits between the controls and the plot.
     compareText = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    compareText:SetPoint("TOPLEFT", bar2, "BOTTOMLEFT", 2, -3)
+    compareText:SetPoint("TOPLEFT", bar2, "BOTTOMLEFT", 158, -3)
     compareText:SetPoint("RIGHT", win, "RIGHT", -10, 0)
     compareText:SetJustifyH("LEFT")
     compareText:SetWordWrap(false)
 
-    plot:SetPoint("TOPLEFT", bar2, "BOTTOMLEFT", 40, -20)
+    Graph.BuildSidebar(win, bar2)
+    plot:SetPoint("TOPLEFT", bar2, "BOTTOMLEFT", 196, -20)
     plot:SetPoint("BOTTOMRIGHT", win, "BOTTOMRIGHT", -10, 38)
+    Graph.logBox:SetPoint("BOTTOMRIGHT", plot, "TOPRIGHT", 0, 3)
     plot:SetBackdrop({ bgFile = "Interface\\BUTTONS\\WHITE8X8" })
     plot:SetBackdropColor(0, 0, 0, 0.25)
     plot:EnableMouse(true)
