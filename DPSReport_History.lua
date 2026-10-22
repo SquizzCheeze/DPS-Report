@@ -273,6 +273,7 @@ local function RenderList()
         end
     end
     listChild:SetHeight(math.max(1, n * 18))
+    listChild.empty:SetShown(n == 0)
 end
 
 local COLS = { { "Player", 120 }, { "DPS", 80 }, { "Damage", 80 }, { "HPS", 80 }, { "Healing", 80 }, { "Kicks", 50 } }
@@ -386,7 +387,10 @@ local function Build()
     else
         win:SetPoint("CENTER")
     end
-    win:SetFrameStrata("MEDIUM")
+    -- HIGH, and to the front when clicked: on MEDIUM, unit frames and
+    -- cooldown icons drew over it (user screenshot 2026-10-22).
+    win:SetFrameStrata("HIGH")
+    win:SetToplevel(true)
     win:SetClampedToScreen(true)
     win:SetMovable(true)
     win:SetResizable(true)
@@ -432,6 +436,11 @@ local function Build()
     listChild = CreateFrame("Frame", nil, sf)
     listChild:SetSize(250, 1)
     sf:SetScrollChild(listChild)
+    listChild.empty = listChild:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    listChild.empty:SetPoint("TOPLEFT", 4, -4)
+    listChild.empty:SetWidth(240)
+    listChild.empty:SetJustifyH("LEFT")
+    listChild.empty:SetText("No fights recorded yet. Every fight of 5 seconds or more is kept from now on.")
 
     -- The detail pane.
     detail = CreateFrame("Frame", nil, win)

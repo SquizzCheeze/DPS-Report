@@ -868,7 +868,10 @@ local function Build()
     else
         win:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
     end
-    win:SetFrameStrata("MEDIUM")
+    -- HIGH, and to the front when clicked: on MEDIUM, unit frames and
+    -- cooldown icons drew over it (user screenshot 2026-10-22).
+    win:SetFrameStrata("HIGH")
+    win:SetToplevel(true)
     win:SetClampedToScreen(true)
     win:SetMovable(true)
     win:SetResizable(true)
