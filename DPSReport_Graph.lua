@@ -649,7 +649,18 @@ end
 function Graph.CompareSummary(f, p, cf, cp, m)
     if not compareText then return end
     if not cf then
-        compareText:SetText("")
+        -- By ability is on but this fight can't show it: say why rather than
+        -- quietly drawing the plain graph.
+        local note = ""
+        if view.byAbility then
+            if not f.imported then
+                note = "|cffffd100By ability|r works on imported runs only (the game hides abilities live)."
+            elseif p and not p.abilities then
+                note = "|cffffd100No ability detail in this import|r -- it was exported before that was added. "
+                    .. "Run Export Last Key again and re-import."
+            end
+        end
+        compareText:SetText(note)
         return
     end
     local label = (cf.clock or "?") .. "  " .. (cf.zone or "")
@@ -831,9 +842,13 @@ end
 local function ShowFight(f)
     for i, existing in ipairs(fights) do
         if f.savedId and existing.savedId == f.savedId then
+            -- The same pull imported again (e.g. re-exported with more detail):
+            -- the new copy replaces the one already open.
+            fights[i] = f
+            if view.compare == existing then view.compare = nil end
             view.fight, view.zoom = i, 1
             Graph.Render()
-            return existing
+            return f
         end
     end
     fights[#fights + 1] = f
