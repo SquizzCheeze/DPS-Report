@@ -18,9 +18,9 @@ New:
   fight's graph.
 - (Test) Import a finished key OR raid boss pull (kill or wipe) from your
   combat log into the graph, with the real per-second numbers the game hides
-  during play: run the exporter script, then Import > Ctrl+V. It works while
-  the game is running. Boss pulls are shaded, and Avg 1s/3s/5s smooths the
-  spikes.
+  during play: copy it with DPS Report Exporter (below), then Import > Ctrl+V.
+  It works while the game is running. Boss pulls are shaded, and Avg 1s/3s/5s
+  smooths the spikes.
 - Fight history: click the H on any meter's title bar (or /dpshistory).
   Every boss pull ("Boss (Difficulty) Kill/Wipe") and every whole Mythic+ run
   ("Dungeon +8 (timed)", trash included) is kept - the last 200, per
@@ -45,15 +45,15 @@ New:
 - By ability: on an imported key or pull, each second of a player's graph
   is split into their top abilities (and Other), with a coloured legend;
   hover for the biggest three at that moment. Works for damage and healing.
-  (Needs a fresh export from the updated script.)
 - The graph window got a new layout (imported keys and pulls): a filled,
   stacked area chart instead of bars, a sidebar listing everyone in the run
   with spec icons and a Find a character box, All characters (everyone
   stacked in class colours), and an Event log of the player's casts and
   aura changes with its own filter. Timeline is the old Casts toggle.
-- Watch And Copy (in the addon's Tools folder): leave it open while you
-  play and every boss pull and finished key is copied to the clipboard the
-  moment it ends, with a chime - in game just Import, Ctrl+V.
+- DPS Report Exporter, a free companion app for Windows: it sits in the
+  tray while you play and copies every boss pull and finished key the moment
+  it ends, with a notification - in game just Import, Ctrl+V. Download it
+  from https://squizzcheeze.github.io/DPS-Report/
 - Find a character also finds you by name; your row shows your name.
 - Timeline: on an imported key or pull, lanes under the ability graph -
   one lane per spell with its icon and name, an icon at every cast, and a bar
