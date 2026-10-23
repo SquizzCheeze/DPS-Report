@@ -102,3 +102,37 @@ jobs:
           # not one. Cost a night on Squizzumables before it was written down.
           include-hidden-files: true
           if-no-files-found: error
+
+  # The tray app (Tools/TrayApp.cs + Exporter.cs), built on GitHub's Windows
+  # machines with the same Build.cmd used locally, and attached to the release
+  # the package job just created. The download page (docs/index.html) links to
+  # the newest release carrying this file, by this exact name -- GitHub turns
+  # spaces in asset names into dots, hence the hyphens. On a dry run it is
+  # kept as an artifact instead.
+  exporter:
+    name: Build the exporter app
+    needs: package
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Build
+        shell: cmd
+        run: |
+          call Tools\Build.cmd || exit /b 1
+          copy "Tools\DPS Report Exporter.exe" DPS-Report-Exporter.exe
+
+      - name: Attach to the release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" DPS-Report-Exporter.exe --clobber
+
+      - name: Keep the exe from a dry run
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: DPS-Report-Exporter
+          path: DPS-Report-Exporter.exe
+          if-no-files-found: error

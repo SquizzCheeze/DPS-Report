@@ -402,6 +402,17 @@ kills a running copy first. The `.exe` and `icon.ico` are gitignored; `Tools` is
 - **Recent exports:** the last 20, in memory only, each re-copyable from the window (closing the
   window only hides it).
 - **Settings:** `%AppData%\DPSReportExporter\settings.txt` (`logFolder`, `paused`, `welcomed`).
-  The default log folder is four levels up from the exe. A single-instance mutex stops a second copy.
+  The default log folder is the first that exists of: four levels up from the exe, the launcher's
+  registered `InstallPath` (HKLM WOW6432Node Blizzard Entertainment\World of Warcraft) + `Logs`, then
+  the two usual install folders -- the downloaded exe runs from anywhere. A single-instance mutex
+  stops a second copy.
+- **Distribution (2026-10-23):** `release.yml`'s `exporter` job builds it on `windows-latest` with
+  the same `Build.cmd` (its `pause`s are skipped when `CI` is set) and attaches it to the tag's release
+  as `DPS-Report-Exporter.exe` -- hyphens, because GitHub turns spaces in asset names into dots, and
+  the download page matches that exact name. `docs/` is the download page, published by `pages.yml`
+  to https://squizzcheeze.github.io/DPS-Report/ on any push touching it (Pages source = GitHub
+  Actions); its Download button asks the API for the newest release carrying the exe, falling back to
+  the releases page. `docs` is in `.pkgmeta`'s ignore list. Version info comes from the `[assembly:]`
+  attributes at the top of `TrayApp.cs`; bump `AssemblyVersion` when the app changes.
 - **Tested** by pointing it at a scratch folder and appending the Ula'tek tail: copied 4.8s later,
   the same export the script makes.

@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DPS Report Exporter</title>
+<meta name="description" content="A free Windows tray app that copies every World of Warcraft boss pull and Mythic+ key from your combat log, ready to import into the DPS Report addon's graph.">
+<meta property="og:title" content="DPS Report Exporter">
+<meta property="og:description" content="Every boss pull and Mythic+ key, second by second. Free tray app for the DPS Report addon.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://squizzcheeze.github.io/DPS-Report/">
+<meta property="og:image" content="https://squizzcheeze.github.io/DPS-Report/icon.png">
+<meta name="theme-color" content="#0f1218">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0f1218;
+    --bg-2: #151a22;
+    --panel: #1a2029;
+    --panel-2: #212833;
+    --line: #2a3340;
+    --text: #e8edf3;
+    --muted: #9aa6b4;
+    --faint: #6c7886;
+    --accent: #00afeb;
+    --accent-2: #3cd2ff;
+    --accent-dark: #008cc8;
+    --good: #4cd08a;
+    --warn: #f0b04a;
+    --radius: 14px;
+    --max: 1120px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent-2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+
+  /* Header */
+  header.top {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(15, 18, 24, 0.85);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  header.top .wrap { display: flex; align-items: center; gap: 24px; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--text); }
+  .brand:hover { text-decoration: none; }
+  .brand img { width: 28px; height: 28px; }
+  nav.links { margin-left: auto; display: flex; gap: 22px; font-size: 14px; }
+  nav.links a { color: var(--muted); }
+  nav.links a:hover { color: var(--text); text-decoration: none; }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    padding: 13px 22px; border-radius: 10px;
+    font-weight: 600; font-size: 15px; border: 1px solid transparent;
+    transition: transform .08s ease, background .15s ease, border-color .15s ease;
+  }
+  .btn:hover { text-decoration: none; transform: translateY(-1px); }
+  .btn svg { width: 18px; height: 18px; flex: none; }
+  .btn-primary { background: var(--accent); color: #05131b; }
+  .btn-primary:hover { background: var(--accent-2); }
+  .btn-ghost { background: transparent; color: var(--text); border-color: var(--line); }
+  .btn-ghost:hover { border-color: var(--muted); }
+
+  /* Hero */
+  .hero { position: relative; overflow: hidden; padding: 88px 0 72px; }
+  .hero::before {
+    content: ""; position: absolute; inset: -40% -10% auto auto; width: 900px; height: 900px;
+    background: radial-gradient(closest-side, rgba(0, 175, 235, 0.16), transparent 70%);
+    pointer-events: none;
+  }
+  .hero .wrap { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 56px; align-items: center; position: relative; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 600; color: var(--accent-2);
+    background: rgba(0, 175, 235, 0.1); border: 1px solid rgba(0, 175, 235, 0.25);
+    padding: 5px 12px; border-radius: 999px; margin-bottom: 22px;
+  }
+  h1 { font-size: clamp(36px, 5vw, 56px); line-height: 1.08; letter-spacing: -0.02em; margin: 0 0 20px; font-weight: 800; }
+  h1 .hl { background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { font-size: 18px; color: var(--muted); margin: 0 0 32px; max-width: 34em; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+  .release-meta { margin-top: 18px; font-size: 13px; color: var(--faint); min-height: 1.6em; }
+  .release-meta strong { color: var(--muted); font-weight: 600; }
+
+  /* Hero visual: a mock Windows notification + tray menu */
+  .visual { position: relative; min-height: 400px; }
+  .toast {
+    position: absolute; top: 0; right: 0; width: 360px; max-width: 100%;
+    background: #202020; border: 1px solid #333; border-radius: 10px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+    padding: 14px 16px; font-family: "Segoe UI", Inter, sans-serif;
+  }
+  .toast .app { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #c8c8c8; margin-bottom: 10px; }
+  .toast .app img { width: 16px; height: 16px; }
+  .toast .app span:last-child { margin-left: auto; color: #8a8a8a; }
+  .toast .t { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+  .toast .b { font-size: 13px; color: #c8c8c8; }
+  .menu {
+    position: absolute; bottom: 0; left: 0; width: 230px;
+    background: #2b2b2b; border: 1px solid #3a3a3a; border-radius: 8px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+    padding: 6px; font: 13px "Segoe UI", Inter, sans-serif; color: #e6e6e6;
+  }
+  .menu div { padding: 6px 12px 6px 30px; border-radius: 4px; position: relative; }
+  .menu div.on { background: #3a3a3a; }
+  .menu div.check::before { content: "\2713"; position: absolute; left: 11px; color: #e6e6e6; }
+  .menu hr { border: 0; border-top: 1px solid #3a3a3a; margin: 5px 4px; }
+  .graph {
+    position: absolute; top: 112px; left: 90px; right: 0; height: 170px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  }
+  .graph svg { width: 100%; height: 100%; display: block; }
+
+  /* Sections */
+  section { padding: 84px 0; }
+  section.alt { background: var(--bg-2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .section-head { text-align: center; max-width: 640px; margin: 0 auto 48px; }
+  .section-head h2 { font-size: clamp(28px, 3.4vw, 36px); letter-spacing: -0.015em; margin: 0 0 12px; }
+  .section-head p { color: var(--muted); margin: 0; font-size: 17px; }
+
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; counter-reset: step; }
+  .step { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 28px; }
+  .step::before {
+    counter-increment: step; content: counter(step);
+    display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px;
+    background: rgba(0, 175, 235, 0.12); color: var(--accent-2); font-weight: 700; margin-bottom: 16px;
+  }
+  .step h3 { margin: 0 0 8px; font-size: 18px; }
+  .step p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .feature { padding: 26px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--line); }
+  .feature .ic {
+    width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+    background: linear-gradient(135deg, rgba(0, 140, 200, 0.25), rgba(60, 210, 255, 0.12));
+    color: var(--accent-2); margin-bottom: 16px;
+  }
+  .feature .ic svg { width: 20px; height: 20px; }
+  .feature h3 { margin: 0 0 8px; font-size: 17px; }
+  .feature p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  /* Install */
+  .install { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 30px; }
+  .card h3 { margin: 0 0 16px; font-size: 19px; }
+  ol.list { margin: 0; padding-left: 22px; color: var(--muted); }
+  ol.list li { margin-bottom: 12px; padding-left: 4px; }
+  ol.list li strong, .card p strong { color: var(--text); }
+  kbd {
+    font: 600 12px/1 Inter, sans-serif; color: var(--text);
+    background: var(--panel-2); border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 5px; padding: 3px 6px;
+  }
+  .note {
+    display: flex; gap: 14px; margin-top: 20px; padding: 16px 18px; border-radius: 10px;
+    background: rgba(240, 176, 74, 0.08); border: 1px solid rgba(240, 176, 74, 0.28);
+    font-size: 14px; color: var(--muted);
+  }
+  .note svg { width: 20px; height: 20px; flex: none; color: var(--warn); margin-top: 2px; }
+  .note strong { color: var(--text); }
+  .req { list-style: none; margin: 0; padding: 0; }
+  .req li { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 15px; }
+  .req li:last-child { border-bottom: 0; }
+  .req svg { width: 18px; height: 18px; color: var(--good); flex: none; margin-top: 3px; }
+  .req strong { color: var(--text); }
+
+  /* FAQ */
+  .faq { max-width: 780px; margin: 0 auto; }
+  details { border-bottom: 1px solid var(--line); padding: 4px 0; }
+  details:first-child { border-top: 1px solid var(--line); }
+  summary {
+    cursor: pointer; list-style: none; padding: 18px 36px 18px 0; position: relative;
+    font-weight: 600; font-size: 16px;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after {
+    content: ""; position: absolute; right: 6px; top: 50%; width: 9px; height: 9px;
+    border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+    transform: translateY(-70%) rotate(45deg); transition: transform .15s ease;
+  }
+  details[open] summary::after { transform: translateY(-30%) rotate(225deg); }
+  details p { margin: 0 0 18px; color: var(--muted); font-size: 15px; }
+
+  /* Addon banner */
+  .banner {
+    display: flex; align-items: center; gap: 28px; flex-wrap: wrap;
+    background: linear-gradient(120deg, rgba(0, 140, 200, 0.18), rgba(60, 210, 255, 0.06));
+    border: 1px solid rgba(0, 175, 235, 0.3); border-radius: 18px; padding: 36px 40px;
+  }
+  .banner h2 { margin: 0 0 6px; font-size: 26px; }
+  .banner p { margin: 0; color: var(--muted); }
+  .banner .cta { margin-left: auto; }
+
+  /* Footer */
+  footer { border-top: 1px solid var(--line); padding: 48px 0 40px; color: var(--faint); font-size: 14px; }
+  .foot { display: grid; grid-template-columns: 1.3fr 1fr; gap: 40px; }
+  .foot h4 { color: var(--text); font-size: 14px; margin: 0 0 14px; }
+  .foot ul { list-style: none; margin: 0; padding: 0; columns: 2; column-gap: 24px; }
+  .foot li { margin-bottom: 8px; break-inside: avoid; }
+  .foot li a { color: var(--muted); }
+  .foot li a:hover { color: var(--text); }
+  .legal { margin-top: 36px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 13px; }
+
+  @media (max-width: 900px) {
+    .hero { padding-top: 56px; }
+    .hero .wrap, .install, .foot { grid-template-columns: 1fr; }
+    .steps, .features { grid-template-columns: 1fr; }
+    .visual { min-height: 340px; }
+    nav.links a.hide-sm { display: none; }
+    .banner { padding: 28px; }
+    .banner .cta { margin-left: 0; }
+  }
+  @media (max-width: 520px) {
+    .wrap { padding: 0 16px; }
+    nav.links { gap: 14px; }
+    .toast { width: 100%; }
+    .graph { left: 0; right: 0; }
+    .menu { width: 220px; }
+    .foot ul { columns: 1; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#"><img src="icon.png" alt=""> DPS Report Exporter</a>
+    <nav class="links">
+      <a class="hide-sm" href="#how">How it works</a>
+      <a class="hide-sm" href="#install">Install</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://www.curseforge.com/projects/1504877">CurseForge</a>
+      <a href="https://github.com/SquizzCheeze/DPS-Report">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <div>
+        <div class="eyebrow">Companion app for the DPS Report addon</div>
+        <h1>Every pull and every key, <span class="hl">second by second.</span></h1>
+        <p class="lead">
+          A small Windows tray app that reads your combat log. The moment a boss
+          pull or a Mythic+ key ends, it's on your clipboard. In game, open
+          DPS Report's graph, click Import and press <kbd>Ctrl</kbd>+<kbd>V</kbd>.
+        </p>
+        <div class="cta">
+          <a class="btn btn-primary" id="download" href="https://github.com/SquizzCheeze/DPS-Report/releases">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+            <span id="download-label">Download for Windows</span>
+          </a>
+          <a class="btn btn-ghost" href="https://www.curseforge.com/projects/1504877">Get the addon on CurseForge</a>
+        </div>
+        <div class="release-meta" id="release-meta">Free &middot; Windows 10 and 11 &middot; Open source (MIT)</div>
+      </div>
+
+      <div class="visual" aria-hidden="true">
+        <div class="toast">
+          <div class="app"><img src="favicon.png" alt=""><span>DPS Report Exporter</span><span>now</span></div>
+          <div class="t">Copied: Ara-Kara +12 (timed)</div>
+          <div class="b">In game: DPS Graph &rsaquo; Import, then Ctrl+V</div>
+        </div>
+        <div class="graph">
+          <svg viewBox="0 0 400 120" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3cd2ff" stop-opacity=".55"/><stop offset="1" stop-color="#3cd2ff" stop-opacity=".05"/></linearGradient>
+              <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#008cc8" stop-opacity=".8"/><stop offset="1" stop-color="#008cc8" stop-opacity=".15"/></linearGradient>
+            </defs>
+            <path d="M0 120 L0 70 L20 52 L40 60 L60 34 L80 46 L100 30 L120 50 L140 40 L160 64 L180 44 L200 22 L220 36 L240 30 L260 56 L280 40 L300 26 L320 44 L340 34 L360 50 L380 30 L400 38 L400 120 Z" fill="url(#g1)"/>
+            <path d="M0 120 L0 92 L20 82 L40 88 L60 70 L80 78 L100 66 L120 82 L140 74 L160 90 L180 78 L200 62 L220 72 L240 66 L260 86 L280 74 L300 62 L320 76 L340 70 L360 82 L380 66 L400 72 L400 120 Z" fill="url(#g2)"/>
+            <path d="M0 70 L20 52 L40 60 L60 34 L80 46 L100 30 L120 50 L140 40 L160 64 L180 44 L200 22 L220 36 L240 30 L260 56 L280 40 L300 26 L320 44 L340 34 L360 50 L380 30 L400 38" fill="none" stroke="#3cd2ff" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+          </svg>
+        </div>
+        <div class="menu">
+          <div>Show recent exports</div>
+          <hr>
+          <div class="on">Copy last key</div>
+          <div>Copy last boss pull</div>
+          <hr>
+          <div>Pause watching</div>
+          <div class="check">Start with Windows</div>
+          <div>Open log folder</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="alt" id="how">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>How it works</h2>
+        <p>The game hides most combat numbers from addons while you play. Your combat log doesn't, so the app reads them from there and hands them to the addon.</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <h3>Play as normal</h3>
+          <p>Leave the app running in the tray. It follows WoW's combat log as it's written and never touches the game itself.</p>
+        </div>
+        <div class="step">
+          <h3>It copies when a fight ends</h3>
+          <p>When a raid boss pull finishes (kill or wipe), or a Mythic+ key ends, that fight is exported to your clipboard with a Windows notification.</p>
+        </div>
+        <div class="step">
+          <h3>Paste it in game</h3>
+          <p>In DPS Report, open the graph (the G on the meter, or <code>/dpsgraph</code>), click Import and press <kbd>Ctrl</kbd>+<kbd>V</kbd>. It's saved, so it survives a /reload.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>What you get in game</h2>
+        <p>An imported fight unlocks the parts of DPS Report that need the real per-second numbers.</p>
+      </div>
+      <div class="features">
+        <div class="feature">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m7 15 4-5 3 3 5-7"/></svg></div>
+          <h3>Per-second graph</h3>
+          <p>DPS, damage, HPS or healing for every player in the group, second by second, with 1s/3s/5s smoothing.</p>
+        </div>
+        <div class="feature">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="4" height="9" rx="1"/><rect x="10" y="7" width="4" height="14" rx="1"/><rect x="17" y="3" width="4" height="18" rx="1"/></svg></div>
+          <h3>Ability breakdown</h3>
+          <p>Each second split into the player's top abilities, with a coloured legend and the biggest three on hover.</p>
+        </div>
+        <div class="feature">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h13"/><circle cx="18" cy="12" r="2"/></svg></div>
+          <h3>Cast timeline</h3>
+          <p>One lane per spell: every cast, and every DoT, HoT, buff or channel's uptime, zoomable and scrollable.</p>
+        </div>
+        <div class="feature">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v18M16 3v18"/><path d="m4 8 4-4 4 4M12 16l4 4 4-4"/></svg></div>
+          <h3>Compare fights</h3>
+          <p>Lay another key or pull over the current one, on a shared timeline, with both totals and the difference.</p>
+        </div>
+        <div class="feature">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg></div>
+          <h3>Recent exports</h3>
+          <p>Double-click the tray icon for the last 20 exports, any of which can be copied again later.</p>
+        </div>
+        <div class="feature">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/></svg></div>
+          <h3>Light and open</h3>
+          <p>No installer, no account, nothing sent anywhere. One small program, built from source anyone can read.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="alt" id="install">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Install in a minute</h2>
+        <p>There's no installer. It's a single file you can keep anywhere.</p>
+      </div>
+      <div class="install">
+        <div class="card">
+          <h3>Getting started</h3>
+          <ol class="list">
+            <li>Install <a href="https://www.curseforge.com/projects/1504877">DPS Report</a> from CurseForge if you haven't already.</li>
+            <li>Turn on combat logging. In game, open DPS Report's options and on the <strong>Mythic+</strong> page tick <strong>Log combat to file in dungeons and raids</strong>, or type <code>/combatlog</code> before you start.</li>
+            <li><strong>Download</strong> the app and put it somewhere permanent, such as your Documents folder.</li>
+            <li><strong>Double-click it.</strong> An icon appears by the clock. On Windows 11 it may be under the <strong>^</strong> arrow; drag it onto the taskbar to keep it in view.</li>
+            <li>Right-click the icon and tick <strong>Start with Windows</strong> so it's always ready.</li>
+          </ol>
+          <div class="note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+            <div><strong>"Windows protected your PC"?</strong> Windows shows this for any program from a small developer without a paid signing certificate. Click <strong>More info</strong>, then <strong>Run anyway</strong>. You only need to do this once.</div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Requirements</h3>
+          <ul class="req">
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg><div><strong>Windows 10 or 11.</strong> Uses the .NET Framework that comes with Windows, so there's nothing else to install.</div></li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg><div><strong>World of Warcraft (Retail)</strong> with the DPS Report addon.</div></li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg><div><strong>Combat logging on</strong> for the fights you want to export.</div></li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg><div><strong>Finds your game by itself.</strong> If WoW is somewhere unusual, right-click the icon, choose <strong>Change log folder</strong> and pick <code>World of Warcraft\_retail_\Logs</code>.</div></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Questions</h2>
+      </div>
+      <div class="faq">
+        <details>
+          <summary>Is this allowed by Blizzard?</summary>
+          <p>Yes. It only reads the combat log file that the game itself writes to disk, the same file Warcraft Logs and similar tools read. It doesn't connect to the game, read its memory or send any input to it.</p>
+        </details>
+        <details>
+          <summary>Is it safe? Why would antivirus mention it?</summary>
+          <p>The app is built automatically on GitHub from the source code in the <a href="https://github.com/SquizzCheeze/DPS-Report/tree/main/Tools">DPS Report repository</a>, where anyone can read it. Because it's new and unsigned, Windows SmartScreen and occasionally an antivirus can be cautious about it. It needs no administrator rights and sends nothing over the internet.</p>
+        </details>
+        <details>
+          <summary>Nothing was copied after a fight. Why?</summary>
+          <p>Check that combat logging was on for that fight, and that the tray icon's tooltip names a log file rather than "Waiting for a combat log". Only raid boss pulls and Mythic+ keys are copied automatically; you can always use <strong>Copy last key</strong> or <strong>Copy last boss pull</strong> from the tray menu.</p>
+        </details>
+        <details>
+          <summary>I copied something else. Can I get an export back?</summary>
+          <p>Yes. Double-click the tray icon to see the last 20 exports, pick one and click <strong>Copy selected</strong>.</p>
+        </details>
+        <details>
+          <summary>Does it work while the game is running?</summary>
+          <p>Yes, that's the point. Imports work without a /reload, and every imported fight is saved in the addon so it's still there after you log out.</p>
+        </details>
+        <details>
+          <summary>How do I remove it?</summary>
+          <p>Right-click the icon and untick <strong>Start with Windows</strong>, choose <strong>Exit</strong>, then delete the file. Its few settings live in <code>%AppData%\DPSReportExporter</code>, which you can delete too.</p>
+        </details>
+        <details>
+          <summary>Is there a version for Mac?</summary>
+          <p>Not at the moment; the app is Windows only.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding-top: 0">
+    <div class="wrap">
+      <div class="banner">
+        <div>
+          <h2>Don't have DPS Report yet?</h2>
+          <p>A lightweight damage and healing meter built on the game's own meter, with fight history, personal bests, a threat meter and the graph.</p>
+        </div>
+        <div class="cta">
+          <a class="btn btn-primary" href="https://www.curseforge.com/projects/1504877">Download on CurseForge</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <a class="brand" href="#"><img src="icon.png" alt=""> DPS Report Exporter</a>
+        <p style="margin: 14px 0 0; max-width: 30em">
+          Made by Squizzcheeze. Bugs and suggestions are welcome on
+          <a href="https://github.com/SquizzCheeze/DPS-Report/issues">GitHub</a> or the
+          <a href="https://www.curseforge.com/projects/1504877">CurseForge page</a>.
+        </p>
+      </div>
+      <div>
+        <h4>More addons by Squizzcheeze</h4>
+        <ul>
+          <li><a href="https://www.curseforge.com/projects/1649203">SquizzFrames</a></li>
+          <li><a href="https://www.curseforge.com/projects/1483099">Squizzumables</a></li>
+          <li><a href="https://www.curseforge.com/projects/1713974">Squizzcap</a></li>
+          <li><a href="https://www.curseforge.com/projects/1705647">SquizzTalents</a></li>
+          <li><a href="https://www.curseforge.com/projects/1533608">Avatar Continued</a></li>
+          <li><a href="https://www.curseforge.com/projects/1599575">KSLBestDungeon</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="legal">
+      Free and open source under the MIT licence. Not affiliated with or endorsed by Blizzard Entertainment.
+      World of Warcraft is a trademark of Blizzard Entertainment, Inc.
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Point the Download button at the newest release that carries the app.
+  // Releases are made by the addon's release workflow; until one includes the
+  // exe, the button keeps its fallback link to the releases page.
+  (function () {
+    var ASSET = "DPS-Report-Exporter.exe";
+    var btn = document.getElementById("download");
+    var label = document.getElementById("download-label");
+    var meta = document.getElementById("release-meta");
+    fetch("https://api.github.com/repos/SquizzCheeze/DPS-Report/releases?per_page=30")
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(function (releases) {
+        for (var i = 0; i < releases.length; i++) {
+          var rel = releases[i];
+          if (rel.draft || rel.prerelease) continue;
+          for (var j = 0; j < rel.assets.length; j++) {
+            var a = rel.assets[j];
+            if (a.name !== ASSET) continue;
+            btn.href = a.browser_download_url;
+            var when = new Date(rel.published_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+            var kb = Math.round(a.size / 1024);
+            meta.innerHTML = "<strong>" + rel.tag_name.replace(/^v/i, "Version ") + "</strong> &middot; " +
+              when + " &middot; " + kb + " KB &middot; Windows 10 and 11 &middot; Free, open source (MIT)";
+            return;
+          }
+        }
+        label.textContent = "View releases";
+      })
+      .catch(function () { /* offline or rate-limited: keep the fallback link */ });
+  })();
+</script>
+</body>
+</html>

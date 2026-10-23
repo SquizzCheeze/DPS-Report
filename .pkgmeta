@@ -21,6 +21,7 @@ manual-changelog:
 # travel with the code, and the changelog is worth having offline.
 ignore:
   - Tools
+  - docs
   - .claude
   - .github
   - .vscode

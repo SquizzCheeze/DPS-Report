@@ -16,11 +16,21 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
+
+// Shown in the exe's Properties > Details, and by Windows' own prompts.
+[assembly: AssemblyTitle("DPS Report Exporter")]
+[assembly: AssemblyProduct("DPS Report Exporter")]
+[assembly: AssemblyDescription("Copies WoW boss pulls and Mythic+ keys from the combat log for the DPS Report addon")]
+[assembly: AssemblyCompany("Squizzcheeze")]
+[assembly: AssemblyCopyright("MIT licence")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
 
 static class Program
 {
@@ -209,11 +219,30 @@ class TrayContext : ApplicationContext
         poll = new System.Threading.Timer(delegate { Poll(); }, null, 500, 2000);
     }
 
-    // Interface\AddOns\DPSReport\Tools -> _retail_\Logs, four levels up.
+    // The first of these that exists: four levels up when run from
+    // Interface\AddOns\DPSReport\Tools; the install the Battle.net launcher
+    // registered (the exe downloaded from the website runs from anywhere);
+    // then the two usual install folders. Falls back to the first, so the
+    // "not found" notification names somewhere sensible.
     static string DefaultLogFolder()
     {
+        var candidates = new List<string>();
         string dir = Path.GetDirectoryName(Application.ExecutablePath);
-        return Path.GetFullPath(Path.Combine(dir, @"..\..\..\..\Logs"));
+        candidates.Add(Path.GetFullPath(Path.Combine(dir, @"..\..\..\..\Logs")));
+        try
+        {
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Blizzard Entertainment\World of Warcraft"))
+            {
+                string install = k == null ? null : k.GetValue("InstallPath") as string;
+                if (!string.IsNullOrEmpty(install)) candidates.Add(Path.Combine(install, "Logs"));
+            }
+        }
+        catch { }
+        candidates.Add(@"C:\Program Files (x86)\World of Warcraft\_retail_\Logs");
+        candidates.Add(@"C:\World of Warcraft\_retail_\Logs");
+        foreach (string c in candidates)
+            if (Directory.Exists(c)) return c;
+        return candidates[0];
     }
 
     // ---- watching -------------------------------------------------------
