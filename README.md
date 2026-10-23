@@ -1,38 +1,51 @@
 # DPS Report
 
-A lightweight World of Warcraft (retail) damage meter addon built on Blizzard's
-built-in `C_DamageMeter` API — no combat log parsing, no heavy CPU cost.
-
-Report DPS/HPS and other stats straight to chat, or keep live meter windows on
-screen with per-spell and per-target breakdowns.
+A lightweight damage meter for World of Warcraft (Retail), built on the game's own damage meter data. No combat log parsing in game and almost no CPU cost, but everything you'd want from a meter: live windows, breakdowns, fight history, personal bests, a threat meter and a second-by-second graph.
 
 **[Download on CurseForge](https://www.curseforge.com/projects/1504877)**
 
+Type **/dps** to open the settings.
+
 ## Features
 
-- **Live meter windows** — as many as you like, each with its own metric: DPS,
-  HPS, damage, healing, absorbs, interrupts, dispels, damage taken, avoidable
-  damage or deaths. Resizable, movable, and they snap together when dragged.
-- **Breakdown drill-down** — click a bar to see per-spell and per-target detail.
-- **End-of-key summary** — finish a Mythic+ key and announce a run summary with
-  a role-weighted **MVP**, top DPS / HPS / interrupts / dispels, least avoidable
-  damage and deaths. "Explain Last Run MVP" shows how the score was worked out.
-- **Chat reports** — post any meter, the whole session or a saved segment to
-  your group, `/say`, or a whisper.
-- **Saved runs** — your recent Mythic+ runs are kept per character, with
-  breakdowns, to look back on or report later.
-- **Saved raid pulls** — every kill and wipe on a raid boss is kept too
-  ("Boss (Heroic) - Wipe #3"), the last 20 separately from your keys, so you
-  can compare attempts: who did what on pull 7 against pull 12.
-- **Compare with your last run** (optional) — after a key, a line in your own
-  chat compares your DPS, HPS and deaths with your last run of that dungeon.
-- **Real names in combat** — shows player names even when the game hides them.
-- **Profiles** — account-wide settings profiles with a per-character active
-  profile pointer.
-- **Nicknames** — set friendly names for group members; shared automatically
-  between group members also running the addon.
-- **Minimap button and addon compartment** entry.
-- **Class-coloured interface** — accents follow the character's class colour.
+### Meters
+- **Live meter windows:** as many as you like, each with its own metric: DPS, HPS, damage, healing, absorbs, interrupts, dispels, damage taken, avoidable damage or deaths. Resizable and movable, and they snap together when dragged.
+- **Breakdowns:** click a bar for per-spell and per-target detail.
+- **Threat meter:** your group and their pets ranked by threat on your target. Whoever has aggro is marked, and your own bar turns orange when you're close to pulling and red when you have it. Click the **T** on any meter, or type **/dpsthreat**.
+- **Real names in combat:** shows player names even when the game hides them.
+
+### History and personal bests
+- **Fight history:** every boss pull ("Boss (Heroic) Kill" or "Wipe") and every whole Mythic+ run, trash included, with each player's DPS, damage, HPS, healing and interrupts. The last 200 are kept per character. Search as you type (a boss, a dungeon, +10, heroic, wipe, a date), and right-click another fight to compare: every number gets a green or red % against it. Click the **H** on any meter, or type **/dpshistory**.
+- **Personal bests:** your best DPS and best total on every boss you kill, by difficulty, with a line in chat when you beat one.
+- **Saved runs and raid pulls:** look back at your recent keys and raid attempts with full breakdowns. Who did what on pull 7 against pull 12?
+
+### DPS Graph
+Click the **G** on any meter, or type **/dpsgraph**.
+- **Every fight this session**, one bar per second, for you and each group member: DPS, damage, HPS or healing. Hover for the value at that moment, and step back through your last 10 fights.
+- **Import a whole key or boss pull** with the real per-second numbers the game hides during play, using the free **[DPS Report Exporter](https://squizzcheeze.github.io/DPS-Report/)** app for Windows. An imported fight adds:
+  - an **ability breakdown** for every second
+  - a **cast timeline**, with every cast and every DoT, HoT, buff and channel's uptime
+  - **everyone stacked** in class colours
+  - an **event log** of casts and aura changes
+  - **compare** against another saved key or pull
+- Imported fights are saved, so they survive /reload and logging out.
+
+### Mythic+
+- **End-of-key summary:** finish a key and announce a run summary with a role-weighted **MVP**, top DPS, HPS, interrupts and dispels, least avoidable damage and deaths. "Explain Last Run MVP" shows how the score was worked out.
+- **Compare with your last run** (optional): a line in your own chat comparing your DPS, HPS and deaths with your last run of that dungeon.
+- **Combat logging** (optional): turns WoW's combat log on in dungeons and raids and off when you leave, and leaves logging started by Archon, /combatlog or another addon alone.
+
+### Everything else
+- **Chat reports:** post any meter, the whole session or a saved fight to your group, /say or a whisper.
+- **Profiles:** account-wide settings profiles, with a per-character active profile.
+- **Nicknames:** friendly names for group members, shared automatically with others running the addon.
+- **Minimap button and addon compartment** entry, and a **class-coloured** interface.
+
+## DPS Report Exporter (Windows)
+
+A small free companion app that sits in your system tray while you play. The moment a boss pull or Mythic+ key ends, it's copied to your clipboard, ready for the graph's **Import** and **Ctrl+V**. It only reads the combat log file the game writes, needs no installer and is open source.
+
+**[Download DPS Report Exporter](https://squizzcheeze.github.io/DPS-Report/)**
 
 ## Installation
 
@@ -44,7 +57,7 @@ screen with per-spell and per-target breakdowns.
    ```
 
    The folder **must** be named `DPSReport` to match the `.toc` file.
-3. Restart WoW, or type `/reload` if the client is already running.
+3. Type `/reload` if the game is already running.
 
 ## Usage
 
