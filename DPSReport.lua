@@ -5593,6 +5593,22 @@ local function CreateMeterDropdown(parent, width, items, initialValue, onSelect)
     arrow:SetText("v")
     arrow:SetTextColor(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
 
+    -- Every change of the shown text goes through here, so an owner that sizes
+    -- the button to its text (the meter title bar) can re-lay itself out.
+    local function ShowText(text)
+        selectedText:SetText(text)
+        if btn.OnTextChanged then btn:OnTextChanged() end
+    end
+
+    -- Width the button needs to show its current text untruncated: the text
+    -- plus the 4px left inset and the 12px the arrow takes on the right.
+    -- Unbounded, because the bounded width reports the truncated string.
+    btn.NaturalWidth = function()
+        local w = selectedText.GetUnboundedStringWidth and selectedText:GetUnboundedStringWidth()
+            or selectedText:GetStringWidth()
+        return math.ceil(w) + 18
+    end
+
     local menu = CreateFrame("Frame", nil, btn, "BackdropTemplate")
     menu:SetPoint("TOPLEFT", btn, "BOTTOMLEFT", 0, -1)
     local menuMinWidth = width
@@ -5611,7 +5627,7 @@ local function CreateMeterDropdown(parent, width, items, initialValue, onSelect)
     -- Set initial display text
     for _, item in ipairs(items) do
         if item.value == initialValue then
-            selectedText:SetText(item.text)
+            ShowText(item.text)
             break
         end
     end
@@ -5670,7 +5686,7 @@ local function CreateMeterDropdown(parent, width, items, initialValue, onSelect)
             opt:SetScript("OnLeave", function() optBG:SetColorTexture(0, 0, 0, 0) end)
             opt:SetScript("OnClick", function()
                 selectedValue = item.value
-                selectedText:SetText(item.text)
+                ShowText(item.text)
                 menu:Hide()
                 if onSelect then onSelect(item.value) end
             end)
@@ -5721,7 +5737,7 @@ local function CreateMeterDropdown(parent, width, items, initialValue, onSelect)
                 opt:SetScript("OnLeave", function() optBG:SetColorTexture(0, 0, 0, 0) end)
                 opt:SetScript("OnClick", function()
                     selectedValue = item.value
-                    selectedText:SetText(item.text)
+                    ShowText(item.text)
                     menu:Hide()
                     if onSelect then onSelect(item.value) end
                 end)
@@ -5766,7 +5782,7 @@ local function CreateMeterDropdown(parent, width, items, initialValue, onSelect)
     btn.SetSelectedValue = function(self, val)
         selectedValue = val
         for _, item in ipairs(items) do
-            if item.value == val then selectedText:SetText(item.text); break end
+            if item.value == val then ShowText(item.text); break end
         end
     end
     btn.GetSelectedValue = function() return selectedValue end
@@ -6370,6 +6386,136 @@ function MeterProto:CreateMeterFrame()
         if DPSReport_ToggleHistory then DPSReport_ToggleHistory() end
     end)
 
+    -- "More" button: stands in for H, T and G when the meter is too narrow
+    -- for all three (LayoutTitleBar). Three drawn lines, not a glyph -- the
+    -- game font has no reliable hamburger character.
+    local moreBtn = CreateFrame("Button", nil, titleBar)
+    moreBtn:SetSize(14, 14)
+    moreBtn:SetPoint("RIGHT", addBtn, "LEFT", -3, 0)
+    local moreLines = {}
+    for i = 1, 3 do
+        local line = moreBtn:CreateTexture(nil, "OVERLAY")
+        line:SetSize(9, 1.5)
+        line:SetPoint("CENTER", 0, (2 - i) * 3.5)
+        line:SetColorTexture(DR_COLORS.textDim[1], DR_COLORS.textDim[2], DR_COLORS.textDim[3])
+        moreLines[i] = line
+    end
+    local function TintMore(c)
+        for _, line in ipairs(moreLines) do line:SetColorTexture(c[1], c[2], c[3]) end
+    end
+
+    local moreMenu = CreateFrame("Frame", nil, moreBtn, "BackdropTemplate")
+    moreMenu:SetPoint("TOPRIGHT", moreBtn, "BOTTOMRIGHT", 0, -3)
+    moreMenu:SetFrameStrata("FULLSCREEN_DIALOG")
+    moreMenu:SetBackdrop({
+        bgFile = "Interface\\BUTTONS\\WHITE8X8",
+        edgeFile = "Interface\\BUTTONS\\WHITE8X8",
+        edgeSize = 1,
+    })
+    moreMenu:SetBackdropColor(DR_COLORS.bg[1], DR_COLORS.bg[2], DR_COLORS.bg[3], 0.98)
+    moreMenu:SetBackdropBorderColor(DR_COLORS.border[1], DR_COLORS.border[2], DR_COLORS.border[3], 1)
+    moreMenu:Hide()
+    local moreItems = {
+        { text = "Fight history",  run = function() if DPSReport_ToggleHistory then DPSReport_ToggleHistory() end end },
+        { text = "Threat meter",   run = function() if DPSReport_ToggleThreat then DPSReport_ToggleThreat() end end },
+        { text = "DPS / HPS graph", run = function() if DPSReport_ToggleGraph then DPSReport_ToggleGraph() end end },
+    }
+    local moreW = 0
+    for i, item in ipairs(moreItems) do
+        local opt = CreateFrame("Button", nil, moreMenu)
+        opt:SetHeight(16)
+        opt:SetPoint("TOPLEFT", moreMenu, "TOPLEFT", 2, -2 - (i - 1) * 16)
+        opt:SetPoint("RIGHT", moreMenu, "RIGHT", -2, 0)
+        local optBG = opt:CreateTexture(nil, "BACKGROUND")
+        optBG:SetAllPoints()
+        optBG:SetColorTexture(0, 0, 0, 0)
+        local optText = opt:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        optText:SetPoint("LEFT", 6, 0)
+        optText:SetText(item.text)
+        optText:SetTextColor(DR_COLORS.text[1], DR_COLORS.text[2], DR_COLORS.text[3])
+        moreW = math.max(moreW, optText:GetStringWidth())
+        opt:SetScript("OnEnter", function() optBG:SetColorTexture(DR_COLORS.controlHi[1], DR_COLORS.controlHi[2], DR_COLORS.controlHi[3], 1) end)
+        opt:SetScript("OnLeave", function() optBG:SetColorTexture(0, 0, 0, 0) end)
+        opt:SetScript("OnClick", function() moreMenu:Hide(); item.run() end)
+    end
+    moreMenu:SetSize(math.ceil(moreW) + 20, #moreItems * 16 + 4)
+
+    local moreCloser = CreateFrame("Button", nil, moreMenu)
+    moreCloser:SetAllPoints(UIParent)
+    moreCloser:SetFrameStrata("FULLSCREEN")
+    moreCloser:SetScript("OnClick", function() moreMenu:Hide() end)
+    moreCloser:Hide()
+    moreMenu:HookScript("OnShow", function() moreCloser:Show() end)
+    moreMenu:HookScript("OnHide", function() moreCloser:Hide() end)
+
+    moreBtn:SetScript("OnEnter", function() TintMore(DR_COLORS.accent) end)
+    moreBtn:SetScript("OnLeave", function() TintMore(DR_COLORS.textDim) end)
+    moreBtn:SetScript("OnClick", function()
+        if moreMenu:IsShown() then moreMenu:Hide() else moreMenu:Show() end
+    end)
+    moreBtn:Hide()
+
+    -- Title bar layout. At full width everything sits at its designed size;
+    -- as the meter narrows it gives ground in order, only as far as needed:
+    --   1. the two dropdowns shrink to fit their text,
+    --   2. H, T and G fold into the "more" button,
+    --   3. the timer hides,
+    --   4. the dropdowns share what is left and truncate ("Curr...").
+    -- Re-run on every resize and whenever a dropdown's text changes.
+    local MODE_W, SESSION_W, DROP_MIN = 72, 74, 26
+    local GAP = 4                            -- between the left and right groups
+    local RIGHT_FULL = 3 + 14 + 2 + 14 + 2 + 14 + 3 + 14 + 2 + 14 + 2 + 14   -- X R + G T H
+    local RIGHT_FOLDED = 3 + 14 + 2 + 14 + 2 + 14 + 3 + 14                     -- X R + more
+    local timerMinW
+    function meter:LayoutTitleBar()
+        local W = titleBar:GetWidth()
+        if not W or W <= 0 then return end
+        if not timerMinW then
+            local text = timerText:GetText()
+            timerText:SetText("00:00")
+            timerMinW = math.ceil(timerText:GetStringWidth())
+            timerText:SetText(text)
+        end
+        local timerW = math.max(timerMinW, math.ceil(timerText:GetStringWidth())) + 4 + 4
+        local modeNat = math.min(MODE_W, math.max(DROP_MIN, modeDropdown:NaturalWidth()))
+        local sessNat = math.min(SESSION_W, math.max(DROP_MIN, sessionDropdown:NaturalWidth()))
+
+        local modeW, sessW, folded, showTimer = MODE_W, SESSION_W, false, true
+        local function Fits()
+            local right = folded and RIGHT_FOLDED or RIGHT_FULL
+            return (showTimer and timerW or 4) + modeW + 2 + sessW + GAP + right <= W
+        end
+        if not Fits() then modeW, sessW = modeNat, sessNat end
+        if not Fits() then folded = true end
+        if not Fits() then showTimer = false end
+        if not Fits() then
+            local room = W - 4 - 2 - GAP - RIGHT_FOLDED
+            local total = modeNat + sessNat
+            modeW = math.max(DROP_MIN, math.floor(room * modeNat / total))
+            sessW = math.max(DROP_MIN, room - modeW)
+        end
+
+        modeDropdown:SetWidth(modeW)
+        sessionDropdown:SetWidth(sessW)
+        timerText:SetShown(showTimer)
+        modeDropdown:ClearAllPoints()
+        if showTimer then
+            modeDropdown:SetPoint("LEFT", timerText, "RIGHT", 4, 0)
+        else
+            modeDropdown:SetPoint("LEFT", titleBar, "LEFT", 4, 0)
+        end
+        historyBtn:SetShown(not folded)
+        threatBtn:SetShown(not folded)
+        graphBtn:SetShown(not folded)
+        moreBtn:SetShown(folded)
+        if not folded then moreMenu:Hide() end
+    end
+    titleBar:SetScript("OnSizeChanged", function() meter:LayoutTitleBar() end)
+    modeDropdown.OnTextChanged = function() meter:LayoutTitleBar() end
+    sessionDropdown.OnTextChanged = function() meter:LayoutTitleBar() end
+    frame:HookScript("OnShow", function() meter:LayoutTitleBar() end)
+    meter:LayoutTitleBar()
+
     -- Break-snap button: small accent dot at the bottom-right of the frame,
     -- visible only when this frame is snapped to another.
     local breakSnapBtn = CreateFrame("Button", nil, frame, "BackdropTemplate")
@@ -6765,7 +6911,14 @@ function MeterProto:RefreshDisplay()
 
     -- Update timer using our own plain-number duration
     if self.timerText then
-        self.timerText:SetText(FormatDuration(self:GetCombatDuration()))
+        local t = FormatDuration(self:GetCombatDuration())
+        self.timerText:SetText(t)
+        -- 9:59 -> 10:00 or 59:59 -> 1:00:00 widens it: the title bar may
+        -- need to give ground (LayoutTitleBar). Only on a length change.
+        if #t ~= self._timerLen then
+            self._timerLen = #t
+            if self.LayoutTitleBar then self:LayoutTitleBar() end
+        end
     end
 
     -- In-combat with no data: show status indicator

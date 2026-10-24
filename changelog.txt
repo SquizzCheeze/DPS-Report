@@ -1,67 +1,11 @@
 DPS Report Changelog
 ====================
 
-V1.29
+V1.30
 
-New:
+Fixed:
 
-- DPS Graph: click the G on any meter's title bar (or type /dpsgraph). Every
-  fight this session is recorded, one bar per second, for you and each group
-  member - DPS, total damage, HPS or total healing. Hover the graph for the
-  value at that moment; < and > step through your last 10 fights, click the
-  player name to switch player, and - / + change the range.
-  The game hides these numbers from addons during combat, so the bars are
-  drawn by the game itself and the range is a guess until the fight ends,
-  when it rescales from the final totals. Graphs last until you /reload or
-  log out; the game does not let addons save them. Two players with the same
-  class and spec can't be told apart mid-fight, so they are left out of that
-  fight's graph.
-- (Test) Import a finished key OR raid boss pull (kill or wipe) from your
-  combat log into the graph, with the real per-second numbers the game hides
-  during play: copy it with DPS Report Exporter (below), then Import > Ctrl+V.
-  It works while the game is running. Boss pulls are shaded, and Avg 1s/3s/5s
-  smooths the spikes.
-- Fight history: click the H on any meter's title bar (or /dpshistory).
-  Every boss pull ("Boss (Difficulty) Kill/Wipe") and every whole Mythic+ run
-  ("Dungeon +8 (timed)", trash included) is kept - the last 200, per
-  character - with each player's DPS, damage, HPS, healing and interrupts.
-  Search narrows the list as you type (a boss, a dungeon, +8, heroic, wipe, a
-  date). Click one to see it; right-click another to compare - every number
-  gets a green/red % against it. The numbers are the game meter's own: a
-  run matches its Overall for the key (DPS over time in combat, with the key
-  timer shown beside it), a boss pull matches that pull's segment.
-- Personal bests: your best DPS and best total on every boss you kill, by
-  difficulty (Personal bests tab), with a line in chat when you beat one.
-- Threat meter: click the T on any meter's title bar (or /dpsthreat). Your
-  group and their pets, ranked by threat on your target - whoever has aggro
-  is marked and listed first, and your own bar turns orange when you're
-  close to pulling and red when you have it. Right-click its title for
-  target or focus, hiding out of combat (on by default) and locking it.
-- New option (Mythic+ page): Log combat to file in dungeons and raids. Turns
-  WoW's combat logging on when you enter one and off when you leave - but
-  only if it turned it on: logging started by Archon, /combatlog or another
-  addon is left alone, and if you switch it off yourself it stays off for
-  that visit. Off by default.
-- By ability: on an imported key or pull, each second of a player's graph
-  is split into their top abilities (and Other), with a coloured legend;
-  hover for the biggest three at that moment. Works for damage and healing.
-- The graph window got a new layout (imported keys and pulls): a filled,
-  stacked area chart instead of bars, a sidebar listing everyone in the run
-  with spec icons and a Find a character box, All characters (everyone
-  stacked in class colours), and an Event log of the player's casts and
-  aura changes with its own filter. Timeline is the old Casts toggle.
-- DPS Report Exporter, a free companion app for Windows: it sits in the
-  tray while you play and copies every boss pull and finished key the moment
-  it ends, with a notification - in game just Import, Ctrl+V. Download it
-  from https://squizzcheeze.github.io/DPS-Report/
-- Find a character also finds you by name; your row shows your name.
-- Timeline: on an imported key or pull, lanes under the ability graph -
-  one lane per spell with its icon and name, an icon at every cast, and a bar
-  wherever its DoT, HoT, buff or channel was up. Window (all/15s/30s/1m/2m)
-  zooms it; the mouse wheel scrolls it (over the names: scrolls the spells)
-  and clicking the graph jumps there. Hover a lane for its casts and uptime.
-- Imported keys and pulls are SAVED (the last 20, plus any you pin to keep
-  forever) and listed under Keys, so they survive /reload and logging out.
-- Compare: pick another saved key or pull to show its bars in grey beside the
-  current one - same player, shared timeline - with both totals, the
-  difference and the averages.
+- Narrow meters no longer overlap in the title bar. As a meter is made
+  smaller, the two dropdowns shrink to fit their text, then the
+  H, T and G buttons fold into one menu button, then the timer hides. At
+  normal widths nothing changes.
