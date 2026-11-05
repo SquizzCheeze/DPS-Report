@@ -131,6 +131,17 @@ local function ReadTotals(which, byID)
     return players
 end
 
+-- What a saved fight keeps of its deaths: {n, c, t}, oldest first, t = seconds
+-- into the fight. nil (not read) is not the same as {} (nobody died).
+local function DeathList(rows)
+    if not rows then return nil end
+    local list = {}
+    for _, d in ipairs(rows) do
+        list[#list + 1] = { n = d.name, c = d.class, t = d.seconds }
+    end
+    return list
+end
+
 local function Sorted(players)
     local list = {}
     for _, p in pairs(players) do list[#list + 1] = p end
@@ -225,6 +236,7 @@ local function CloseRun(tries)
     Save({
         kind = "run", v = 2, when = r.when, zone = r.zone, keyLevel = r.level, onTime = r.onTime,
         duration = combat > 0 and combat or keyTime, keyTime = keyTime, players = list,
+        deaths = ns.TrackedDeaths and DeathList(ns.TrackedDeaths("overall")),
         name = string.format("%s +%d %s", r.zone or "?", r.level or 0,
             r.onTime == true and "(timed)" or (r.onTime == false and "(over time)" or "")),
     })
@@ -261,6 +273,7 @@ local function Finalise(f, tries)
     end
     pending = pending - 1
     f.duration = f.sessionDur
+    f.deaths = ns.SessionDeaths and DeathList(ns.SessionDeaths(f.sessionID))
     f.sessionID, f.sessionDur, f.maxSession = nil, nil, nil
     if f.duration < MIN_SECONDS then return end
     f.players = Sorted(players)
@@ -507,9 +520,29 @@ local function HideCells(fromRow)
     end
 end
 
+-- The fight's deaths in the order they happened, pinned under the table. Fights
+-- saved before these were kept have no list and show no line.
+local function RenderDeaths(f)
+    local list = f and f.deaths
+    if not list then
+        detail.deaths:Hide()
+        return 0
+    end
+    local parts = {}
+    for _, d in ipairs(list) do
+        local cc = d.c and RAID_CLASS_COLORS and RAID_CLASS_COLORS[d.c]
+        local name = cc and ("|c" .. cc.colorStr .. d.n .. "|r") or d.n
+        parts[#parts + 1] = name .. " " .. Clock(d.t)
+    end
+    detail.deaths:SetText("Deaths: " .. (#parts > 0 and table.concat(parts, ", ") or "none"))
+    detail.deaths:Show()
+    return detail.deaths:GetStringHeight() + 6
+end
+
 local function RenderFight()
     local f = state.selected
     detail.title:SetText(f and f.name or "Click a fight on the left.")
+    local deathsHeight = RenderDeaths(f)
     if not f then
         detail.sub:SetText("Right-click another fight to compare it with the selected one.")
         HideCells(0)
@@ -538,7 +571,7 @@ local function RenderFight()
         end
         Cell(i, 6):SetText(tostring(p.i or 0) .. (cmp and o and Change(p.i, o.i) or ""))
         rows = i
-        if 40 + (i + 1) * 16 > detail:GetHeight() then break end
+        if 40 + (i + 1) * 16 + deathsHeight > detail:GetHeight() then break end
     end
     HideCells(rows + 1)
 end
@@ -547,6 +580,7 @@ local function RenderBests()
     local _, bests = Store()
     detail.title:SetText("Personal bests")
     detail.sub:SetText("Your best DPS and best total on each boss you have killed, by difficulty.")
+    detail.deaths:Hide()
     HideCells(0)
     local list = {}
     for _, b in pairs(bests or {}) do list[#list + 1] = b end
@@ -680,6 +714,11 @@ local function Build()
     detail.sub:SetPoint("RIGHT", detail, "RIGHT", 0, 0)
     detail.sub:SetJustifyH("LEFT")
     detail.sub:SetWordWrap(false)
+    detail.deaths = detail:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    detail.deaths:SetPoint("BOTTOMLEFT", detail, "BOTTOMLEFT", 0, 0)
+    detail.deaths:SetPoint("BOTTOMRIGHT", detail, "BOTTOMRIGHT", 0, 0)
+    detail.deaths:SetJustifyH("LEFT")
+    detail.deaths:Hide()
 
     local grip = CreateFrame("Button", nil, win)
     grip:SetSize(14, 14)

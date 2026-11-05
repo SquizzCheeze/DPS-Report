@@ -8,6 +8,15 @@ history as its release notes. Older sections move here instead of being
 deleted: many carry root-cause writeups worth grepping before assuming a bug
 is fresh. This file is in the .pkgmeta ignore list, so it never ships.
 
+V1.30
+
+Fixed:
+
+- Narrow meters no longer overlap in the title bar. As a meter is made
+  smaller, the two dropdowns shrink to fit their text, then the
+  H, T and G buttons fold into one menu button, then the timer hides. At
+  normal widths nothing changes.
+
 V1.29
 
 New:

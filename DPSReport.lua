@@ -47,6 +47,14 @@ local function SetActiveProfile(profName)
     DPSReportDB.charData[charKey].activeProfile = profName
 end
 
+-- WoW Forever does not load Blizzard_DeprecatedSpecialization, so the bare spec
+-- globals are only there on retail. One table, so it costs one local here.
+local SpecAPI = {
+    GetSpecialization = _G.GetSpecialization or C_SpecializationInfo.GetSpecialization,
+    GetSpecializationInfo = _G.GetSpecializationInfo or C_SpecializationInfo.GetSpecializationInfo,
+    GetInspectSpecialization = _G.GetInspectSpecialization or C_SpecializationInfo.GetInspectSpecialization,
+}
+
 -- Addon communication
 local ADDON_MSG_PREFIX = "DPSReport"
 local nicknameCache = {}  -- "Name-Realm" -> "Nickname" (received from others)
@@ -107,9 +115,9 @@ local function RefreshRosterCache()
         guidNameCache[selfGUID] = shortSelf
     end
     -- Cache own specIconID
-    local currentSpec = GetSpecialization and GetSpecialization()
+    local currentSpec = SpecAPI.GetSpecialization()
     if currentSpec then
-        local _, specName, _, icon, specRole = GetSpecializationInfo(currentSpec)
+        local _, specName, _, icon, specRole = SpecAPI.GetSpecializationInfo(currentSpec)
         if icon and charKey then
             specNameCache[icon] = charKey
             specSeen[icon] = true
@@ -170,8 +178,8 @@ local function RefreshRosterCache()
                         and assignedRole ~= "NONE" then
                         roleByName[name] = assignedRole
                     end
-                    local specID = GetInspectSpecialization and GetInspectSpecialization(unit)
-                    if specID and not issecretvalue(specID) and specID > 0 then
+                    local specID = SpecAPI.GetInspectSpecialization(unit)
+                    if specID and not issecretvalue(specID) and specID > 0 and GetSpecializationInfoByID then
                         local _, specName, _, icon, specRole = GetSpecializationInfoByID(specID)
                         if icon then
                             if specName then specIconToSpecName[icon] = specName end
@@ -246,7 +254,7 @@ local function QueueGroupInspections()
     for i = 1, count do
         local unit = prefix .. i
         if not UnitIsUnit(unit, "player") and UnitExists(unit) then
-            local specID = GetInspectSpecialization and GetInspectSpecialization(unit)
+            local specID = SpecAPI.GetInspectSpecialization(unit)
             -- A secret specID means the unit is identity-restricted, so inspecting it can
             -- never resolve a spec — skip it instead of queuing work that cannot succeed.
             if not issecretvalue(specID) and (not specID or specID == 0) then
@@ -589,6 +597,7 @@ function DeathTracker:BuildTimeline(scope)
             totalAmount     = 1,
             amountPerSecond = 0,
             valueLabel      = string.format("%d:%02d", math.floor(secs / 60), secs % 60),
+            seconds         = secs,
             deathIndex      = seen[guid],
             deathCount      = perGuid[guid],
         }
@@ -1508,7 +1517,7 @@ end
 -- entry and survives the run ending, so it is preferred; the assigned-role map
 -- covers players whose spec never got inspected.
 local function ResolveEntryRole(e)
-    if e.specIconID and specIconToRole[e.specIconID] then
+    if e.specIconID and not issecretvalue(e.specIconID) and specIconToRole[e.specIconID] then
         return specIconToRole[e.specIconID]
     end
     if e.name and roleByName[e.name] then
@@ -2064,7 +2073,7 @@ local function DoCombatEnd()
             wipe(specNameCache)
             local specSeen = {}
             for _, src in ipairs(dpsSession.combatSources) do
-                if src.specIconID and not issecretvalue(src.name) then
+                if src.specIconID and not issecretvalue(src.specIconID) and not issecretvalue(src.name) then
                     local name = src.name:match("^([^%-]+)") or src.name
                     if name ~= "" then
                         if specSeen[src.specIconID] then
@@ -4917,8 +4926,20 @@ local ABBREVIATE_OPTS_PS = {
 
 -- Pre-create config objects for optimal performance (if available)
 if CreateAbbreviateConfig then
-    ABBREVIATE_OPTS_TOTAL.config = CreateAbbreviateConfig(ABBREVIATE_OPTS_TOTAL.breakpointData)
-    ABBREVIATE_OPTS_PS.config    = CreateAbbreviateConfig(ABBREVIATE_OPTS_PS.breakpointData)
+    -- A value below every breakpoint prints raw ("0.37931034482759"), which a
+    -- low-level character's DPS can be. These rows keep it to 2 decimals, then 0.
+    -- A breakpoint of 0 is rejected ("must be greater than zero"), so anything
+    -- under the last one still prints raw.
+    local BELOW_ONE = {
+        { breakpoint = 0.01,     abbreviation = "", significandDivisor = 0.01, fractionDivisor = 100, abbreviationIsGlobal = false },
+        { breakpoint = 0.000001, abbreviation = "", significandDivisor = 1,    fractionDivisor = 1,   abbreviationIsGlobal = false },
+    }
+    for _, opts in ipairs({ ABBREVIATE_OPTS_TOTAL, ABBREVIATE_OPTS_PS }) do
+        for _, row in ipairs(BELOW_ONE) do
+            table.insert(opts.breakpointData, row)
+        end
+        opts.config = CreateAbbreviateConfig(opts.breakpointData)
+    end
 end
 
 -- Mode -> C_DamageMeter type mapping (supports all Blizzard meter types)
@@ -5002,6 +5023,75 @@ AggregateDeathEntries = function(entries, scope)
 
     table.sort(order, function(a, b) return a.totalAmount > b.totalAmount end)
     return order
+end
+
+-- One finished fight's deaths from the game's own session, oldest first, each
+-- with its `deathTimeSeconds` (user request 2026-11-05: a past fight only
+-- showed counts, because AggregateDeathEntries folds these rows and drops the
+-- time). Rows without a recap are left out, as Blizzard's own list treats them,
+-- and so are creatures. nil = cannot answer: still secret, or the time is -1
+-- (Overall has none). Unlike DeathTracker this can include a Feign Death, since
+-- nothing in the session separates one afterwards.
+local function ReadSessionDeaths(sessionID)
+    local ok, session = pcall(C_DamageMeter.GetCombatSessionFromID, sessionID, Enum.DamageMeterType.Deaths)
+    if not ok or type(session) ~= "table" then return nil end
+    local sources = session.combatSources
+    if issecretvalue(sources) or type(sources) ~= "table" then return nil end
+    local out = {}
+    for _, src in ipairs(sources) do
+        local id, secs, cid = src.deathRecapID, src.deathTimeSeconds, src.sourceCreatureID
+        if issecretvalue(id) or issecretvalue(secs) or issecretvalue(cid) then return nil end
+        local isCreature = cid ~= nil and src.classFilename == ""
+        if id and id ~= 0 and not isCreature then
+            if type(secs) ~= "number" or secs < 0 then return nil end
+            local full = ResolveSourcePlainName(src)
+            out[#out + 1] = {
+                full    = full,
+                name    = full and (full:match("^([^%-]+)") or full) or "?",
+                class   = src.classFilename,
+                guid    = src.sourceGUID ~= nil and SafeStr(src.sourceGUID) or nil,
+                isMe    = src.isLocalPlayer,
+                seconds = secs,
+                recapID = id,
+            }
+        end
+    end
+    table.sort(out, function(a, b)
+        if a.seconds ~= b.seconds then return a.seconds < b.seconds end
+        return a.recapID < b.recapID
+    end)
+    return out
+end
+
+-- The in-time-order rows (see DeathTracker:BuildTimeline) for a finished fight,
+-- or nil when there is nothing to list, which leaves the per-player counts.
+local function BuildSessionDeathTimeline(sessionID)
+    local deaths = ReadSessionDeaths(sessionID)
+    if not deaths or #deaths == 0 then return nil end
+    local seen, perPlayer, out = {}, {}, {}
+    for _, d in ipairs(deaths) do
+        local key = d.guid or d.name
+        perPlayer[key] = (perPlayer[key] or 0) + 1
+    end
+    for _, d in ipairs(deaths) do
+        local key = d.guid or d.name
+        seen[key] = (seen[key] or 0) + 1
+        local secs = math.floor(d.seconds)
+        out[#out + 1] = {
+            name            = d.name,
+            plainName       = d.full,
+            class           = d.class,
+            sourceGUID      = d.guid,
+            isPlayer        = d.isMe,
+            displayValue    = 1,
+            totalAmount     = 1,
+            amountPerSecond = 0,
+            valueLabel      = string.format("%d:%02d", math.floor(secs / 60), secs % 60),
+            deathIndex      = seen[key],
+            deathCount      = perPlayer[key],
+        }
+    end
+    return out
 end
 
 -- Shared helper: build entries from GetCombatSessionFromID for a given mode.
@@ -5140,17 +5230,21 @@ function DPSMeter:SnapshotSession(sessionType, dungeonName, duration, memberName
                 })
             end
             local total = LaunderNumber(session.totalAmount)
+            local deathTimeline
             if modeName == "deaths" then
                 -- Fold the per-event rows into per-player counts before they are
                 -- stored, so the segment holds one entry per player and every
                 -- later reader (chat reports, the seg: meter mode, the run
                 -- summary) sees a real count instead of a list of zeroes.
-                entries = AggregateDeathEntries(entries,
-                    sessionType == Enum.DamageMeterSessionType.Overall and "overall" or "current")
+                local deathScope = sessionType == Enum.DamageMeterSessionType.Overall and "overall" or "current"
+                entries = AggregateDeathEntries(entries, deathScope)
                 total = 0
                 for _, e in ipairs(entries) do total = total + (e.totalAmount or 0) end
+                -- Kept beside the counts for the seg: view; the tracker's tally
+                -- does not outlive the next key, and Overall has no times.
+                deathTimeline = DeathTracker:BuildTimeline(deathScope)
             end
-            modes[modeName] = { entries = entries, totalAmount = total }
+            modes[modeName] = { entries = entries, totalAmount = total, timeline = deathTimeline }
         end
     end
 
@@ -5247,12 +5341,12 @@ function DPSMeter:PrintRunComparison(idx)
     local dpsNow = dNow and dNow.amountPerSecond or 0
     local hpsNow = hNow and hNow.amountPerSecond or 0
     if dpsNow > 0 then
-        parts[#parts + 1] = "DPS " .. AbbreviateNumbers(dpsNow) .. Change(dpsNow, dOld and dOld.amountPerSecond)
+        parts[#parts + 1] = "DPS " .. AbbreviateNumbers(dpsNow, ABBREVIATE_OPTS_PS) .. Change(dpsNow, dOld and dOld.amountPerSecond)
     end
     -- Healing only where it is a real part of what you did (a healer, or a
     -- hybrid), not a DPS's leech.
     if hpsNow > 0 and hpsNow >= dpsNow * 0.5 then
-        parts[#parts + 1] = "HPS " .. AbbreviateNumbers(hpsNow) .. Change(hpsNow, hOld and hOld.amountPerSecond)
+        parts[#parts + 1] = "HPS " .. AbbreviateNumbers(hpsNow, ABBREVIATE_OPTS_PS) .. Change(hpsNow, hOld and hOld.amountPerSecond)
     end
     local deNow, deOld = Mine(seg, "deaths"), Mine(prev, "deaths")
     parts[#parts + 1] = string.format("deaths %d (was %d)",
@@ -5455,7 +5549,12 @@ function MeterProto:LoadFromAPI()
         local seg = idx and DPSMeter.segments[idx]
         if seg and seg.modes and seg.modes[self.mode] then
             local modeData = seg.modes[self.mode]
-            for _, e in ipairs(modeData.entries) do
+            local list = modeData.entries
+            -- Deaths in time order, for a run saved since that was kept.
+            if modeData.timeline and (not settings or settings.deathsTimeline ~= false) then
+                list = modeData.timeline
+            end
+            for _, e in ipairs(list) do
                 table.insert(self.entries, e)
             end
         end
@@ -5465,7 +5564,9 @@ function MeterProto:LoadFromAPI()
     -- API-tracked expired session: fetch live from C_DamageMeter by session ID.
     if self.session and self.session:sub(1, 4) == "sid:" then
         local id = tonumber(self.session:sub(5))
-        for _, e in ipairs(BuildEntriesFromSessionID(id, self.mode, self.MAX_BARS)) do
+        local timeline = self.mode == "deaths" and (not settings or settings.deathsTimeline ~= false)
+            and BuildSessionDeathTimeline(id)
+        for _, e in ipairs(timeline or BuildEntriesFromSessionID(id, self.mode, self.MAX_BARS)) do
             table.insert(self.entries, e)
         end
         return
@@ -8730,4 +8831,9 @@ do
     -- The Overall session's combat time, with the milliseconds bug corrected
     -- (History's whole-run DPS divides by it, like the meter's Overall).
     ns.OverallDuration = function() return DPSMeter:OverallDurationSeconds() end
+    -- Each death with its time, oldest first (rows hold name, class, seconds):
+    -- one finished fight's by session ID, or a scope of our own tally for a
+    -- whole run, whose Overall session has no times.
+    ns.SessionDeaths = ReadSessionDeaths
+    ns.TrackedDeaths = function(scope) return DeathTracker:BuildTimeline(scope) end
 end

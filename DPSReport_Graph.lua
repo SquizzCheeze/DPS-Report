@@ -384,7 +384,7 @@ function Graph.Render()
             colValue[i], colSample[i] = values[idx], idx
         end
     end
-    maxText:SetText(AbbreviateNumbers(top))
+    maxText:SetText(AbbreviateNumbers(top, ns.AbbrevTotal))
     startText:SetText("0:00")
     endText:SetText(Clock(n * SAMPLE_INTERVAL))
     Graph.DrawBosses(f, width, n)
@@ -666,7 +666,7 @@ function Graph.RenderAbilities(f, p, m, width, height, base, opts)
     Graph.abilityCols, Graph.abilityList, Graph.cols, Graph.colW = colData, list, pts, step
     Graph.otherLabel = opts.otherLabel
 
-    maxText:SetText(AbbreviateNumbers(top))
+    maxText:SetText(AbbreviateNumbers(top, ns.AbbrevTotal))
     startText:SetText("0:00")
     endText:SetText(Clock(n * SAMPLE_INTERVAL))
     Graph.DrawBosses(f, width, n, 0, base)
@@ -1318,7 +1318,7 @@ function Graph.CompareSummary(f, p, cf, cp, m)
     compareText:SetText(string.format("|cffbbbbbbvs %s|r   %s %s vs %s%s|r   avg %s vs %s",
         label, m.meter == "damage" and "Damage" or "Healing",
         AbbreviateNumbers(a), AbbreviateNumbers(b), colour .. change,
-        AbbreviateNumbers(rateA), AbbreviateNumbers(rateB)))
+        AbbreviateNumbers(rateA, ns.AbbrevPS), AbbreviateNumbers(rateB, ns.AbbrevPS)))
 end
 
 local function SpecClass(specID)

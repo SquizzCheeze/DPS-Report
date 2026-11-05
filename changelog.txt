@@ -1,11 +1,14 @@
 DPS Report Changelog
 ====================
 
-V1.30
+V1.31
 
-Fixed:
+New:
 
-- Narrow meters no longer overlap in the title bar. As a meter is made
-  smaller, the two dropdowns shrink to fit their text, then the
-  H, T and G buttons fold into one menu button, then the timer hides. At
-  normal widths nothing changes.
+- DPS Report now runs on WoW Forever as well as retail.
+- Past fights now show when each death happened. Pick an earlier fight or
+  a saved Mythic+ run on a Deaths meter and it lists every death in order
+  with its time ("Deaths in time order" still switches this off). Fight
+  history (H) also saves them, in a Deaths line under each fight, so they
+  are still there after you log out. Runs and fights saved before this
+  update have no times to show.
