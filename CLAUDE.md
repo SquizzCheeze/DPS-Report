@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Blizzard UI source
 
-Blizzard's UI source is at C:\dev\wow-ui-source. Search it to verify any API, event or mixin before using it. It is a local git clone; check which branch is checked out (`git -C C:\dev\wow-ui-source branch`) before trusting it for a PTR or Forever question.
+Blizzard's UI source is at C:\dev\wow-ui-source. Search it to verify any API, event or mixin before using it. That clone is the `live` (retail) branch; for WoW Forever use C:\dev\wow-ui-source-forever (`forever` branch) instead.
 
 ## What this is
 
