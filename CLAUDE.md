@@ -325,7 +325,18 @@ Blizzard's `UIPanelScrollFrameTemplate` scrollbar isn't part of `DR_COLORS`; `Sk
 
 ### Persistence model
 
-`DPSReportDB` (SavedVariables) holds: `profiles` (account-wide, keyed by profile name, each holding a full settings table cloned from `DEFAULT_SETTINGS`), `charData` (per-character active profile pointer, keyed by `charKey` = "Name-Realm"), `nicknames` (account-wide), and `seenNames` (account-wide GUID → name cache). `LoadSettings()` also handles one-time migrations (legacy account-wide `activeProfile` → per-character, legacy `settings` → `profiles.Default`, `"raid"` channel → `"instance"`, and `autoReportType` from `TYPE_MAP` spellings to the `METER_MODE_MAP` ones the segment is keyed by).
+`DPSReportDB` (SavedVariables) holds: `profiles` (account-wide, keyed by profile name, each holding a full settings table cloned from `DEFAULT_SETTINGS`), `charData` (per-character active profile pointer and live meters, keyed by `charDataKey`), `nicknames` (account-wide), and `seenNames` (account-wide GUID → name cache). `LoadSettings()` also handles one-time migrations (legacy account-wide `activeProfile` → per-character, legacy `settings` → `profiles.Default`, `"raid"` channel → `"instance"`, and `autoReportType` from `TYPE_MAP` spellings to the `METER_MODE_MAP` ones the segment is keyed by).
+
+⚠ **`charData` is keyed by `charDataKey`, not `charKey`** (V1.32, 2026-11-12). On retail they
+are equal ("Name-Realm"). On WoW Forever `UnitName`'s second return is the character's SURNAME
+(not a realm), and two characters may share a first name on one realm, so "Name-Realm" made them
+share one entry: each loaded the other's meters and saved fight (user report). There
+`charDataKey` is "First Surname-Realm"; on first login a character is seeded with a copy of the
+old shared entry minus `segments` and every meter's `entries`. `charKey` stays "Name-Realm"
+because nickname code matches it against other players' names (so same-first-name characters
+still share a nickname, accepted). Anything new stored per character in `DPSReportDB` must use
+`charDataKey`. Per-character SavedVariables are fine: Forever's WTF folders are
+`<Realm>/<First>-<Surname>`, already distinct.
 
 **Since V1.25 (2026-09-26):**
 
