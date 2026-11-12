@@ -1,6 +1,14 @@
 DPS Report Changelog
 ====================
 
+V1.32
+
+Fixed:
+
+- WoW Forever: characters with the same first name but different surnames
+  no longer share meter windows, profile choice and the last fight shown.
+  Each keeps the shared layout once and goes its own way from there.
+
 V1.31
 
 New:

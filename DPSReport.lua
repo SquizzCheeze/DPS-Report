@@ -29,11 +29,18 @@ local settings
 
 -- Per-character key (populated on PLAYER_LOGIN)
 local charKey
+-- Key for this character's entry in DPSReportDB.charData (meters, active
+-- profile). Same as charKey on retail. On WoW Forever characters also have a
+-- SURNAME (UnitName's second return there), and two characters may share a
+-- first name on one realm, so charKey alone made them share one entry and
+-- each loaded the other's meters and last fight. charKey itself stays
+-- "Name-Realm": the nickname code matches it against other players' names.
+local charDataKey
 
 -- Get the active profile name for the current character (per-character, defaults to "Default")
 local function GetActiveProfile()
     if charKey and DPSReportDB and DPSReportDB.charData then
-        local cd = DPSReportDB.charData[charKey]
+        local cd = DPSReportDB.charData[charDataKey]
         if cd and cd.activeProfile then return cd.activeProfile end
     end
     return "Default"
@@ -43,8 +50,8 @@ end
 local function SetActiveProfile(profName)
     if not charKey or not DPSReportDB then return end
     if not DPSReportDB.charData then DPSReportDB.charData = {} end
-    if not DPSReportDB.charData[charKey] then DPSReportDB.charData[charKey] = {} end
-    DPSReportDB.charData[charKey].activeProfile = profName
+    if not DPSReportDB.charData[charDataKey] then DPSReportDB.charData[charDataKey] = {} end
+    DPSReportDB.charData[charDataKey].activeProfile = profName
 end
 
 -- WoW Forever does not load Blizzard_DeprecatedSpecialization, so the bare spec
@@ -758,9 +765,9 @@ local function LoadSettings()
         -- If a charKey is available and doesn't have a profile yet, carry it forward
         if charKey then
             if not DPSReportDB.charData then DPSReportDB.charData = {} end
-            if not DPSReportDB.charData[charKey] then DPSReportDB.charData[charKey] = {} end
-            if not DPSReportDB.charData[charKey].activeProfile then
-                DPSReportDB.charData[charKey].activeProfile = DPSReportDB.activeProfile
+            if not DPSReportDB.charData[charDataKey] then DPSReportDB.charData[charDataKey] = {} end
+            if not DPSReportDB.charData[charDataKey].activeProfile then
+                DPSReportDB.charData[charDataKey].activeProfile = DPSReportDB.activeProfile
             end
         end
         DPSReportDB.activeProfile = nil
@@ -2195,6 +2202,25 @@ f:SetScript("OnEvent", function(self, event, ...)
         return
     elseif event == "PLAYER_LOGIN" then
         charKey = UnitName("player") .. "-" .. GetRealmName()
+        charDataKey = charKey
+        -- On retail the player's realm return is nil, so this only fires on
+        -- Forever, where it is the surname (see charDataKey above).
+        local firstName, surname = UnitName("player")
+        if surname and surname ~= "" then
+            charDataKey = firstName .. " " .. surname .. "-" .. GetRealmName()
+            -- The entry these characters used to share: give this one a copy of
+            -- its layout and profile choice, without the saved fight (entries)
+            -- that may belong to the other character.
+            local cd = DPSReportDB and DPSReportDB.charData
+            if cd and not cd[charDataKey] and type(cd[charKey]) == "table" then
+                local copy = CopyTable(cd[charKey])
+                copy.segments = nil
+                if type(copy.meters) == "table" then
+                    for _, m in ipairs(copy.meters) do m.entries = nil end
+                end
+                cd[charDataKey] = copy
+            end
+        end
         -- Re-run in case UnitClass wasn't answerable at file load. Mutates the
         -- accent tables in place, and every frame is built after this point.
         ApplyClassAccent()
@@ -8571,7 +8597,7 @@ end
 
 function MeterProto:LoadPosition()
     if not self.frame or not DPSReportDB or not charKey then return end
-    local charData = DPSReportDB.charData and DPSReportDB.charData[charKey]
+    local charData = DPSReportDB.charData and DPSReportDB.charData[charDataKey]
     if not charData or not charData.meters then return end
     -- Find saved entry by id (array may not be sequential after removals)
     local saved
@@ -8676,8 +8702,8 @@ function DPSMeter:SaveAllMeters()
         table.insert(saved, entry)
     end
     -- Preserve existing per-character fields (e.g. activeProfile) when saving
-    if not DPSReportDB.charData[charKey] then DPSReportDB.charData[charKey] = {} end
-    local cd = DPSReportDB.charData[charKey]
+    if not DPSReportDB.charData[charDataKey] then DPSReportDB.charData[charDataKey] = {} end
+    local cd = DPSReportDB.charData[charDataKey]
     cd.meters = saved
     -- See LoadAllMeters: per-character once that saved variable is registered.
     if self.segmentsPerChar then
@@ -8693,7 +8719,7 @@ function DPSMeter:LoadAllMeters()
     -- Set before anything else: the migrations at the end of this function, and
     -- the LoadFromAPI calls below, both save, and they must be allowed through.
     self.metersLoaded = true
-    local charData = DPSReportDB and DPSReportDB.charData and DPSReportDB.charData[charKey]
+    local charData = DPSReportDB and DPSReportDB.charData and DPSReportDB.charData[charDataKey]
     -- Restore M+ stored segments.
     --
     -- They live in the PER-CHARACTER saved variable now. In the account-wide
@@ -8775,7 +8801,7 @@ function DPSMeter:LoadAllMeters()
     -- Migrate legacy global meters/segments to per-character
     if DPSReportDB and charKey and DPSReportDB.meters and not DPSReportDB.charData then
         DPSReportDB.charData = {}
-        DPSReportDB.charData[charKey] = {
+        DPSReportDB.charData[charDataKey] = {
             meters = DPSReportDB.meters,
             segments = DPSReportDB.segments or {},
         }
