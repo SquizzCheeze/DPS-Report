@@ -4,7 +4,7 @@
 ## Author: Squizzcheeze
 ## X-License: MIT
 ## X-Curse-Project-ID: 1504877
-## Version: 1.31
+## Version: 1.32
 ## SavedVariables: DPSReportDB
 ## SavedVariablesPerCharacter: DPSReportCharDB
 ## IconTexture: Interface\AddOns\DPSReport\Textures\dpsreportingameicon

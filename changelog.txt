@@ -8,15 +8,3 @@ Fixed:
 - WoW Forever: characters with the same first name but different surnames
   no longer share meter windows, profile choice and the last fight shown.
   Each keeps the shared layout once and goes its own way from there.
-
-V1.31
-
-New:
-
-- DPS Report now runs on WoW Forever as well as retail.
-- Past fights now show when each death happened. Pick an earlier fight or
-  a saved Mythic+ run on a Deaths meter and it lists every death in order
-  with its time ("Deaths in time order" still switches this off). Fight
-  history (H) also saves them, in a Deaths line under each fight, so they
-  are still there after you log out. Runs and fights saved before this
-  update have no times to show.
